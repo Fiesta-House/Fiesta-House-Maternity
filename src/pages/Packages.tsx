@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import api from '@/api/apiInstance';
 import { API_BASE_URL as API_BASE } from '@/config';
-import { Plus, Pencil, Trash2, Camera, Clock3, Images, Shirt, Sparkles, BookOpen } from 'lucide-react';
+import { Plus, Pencil, Trash2, Camera, Clock3, Images, Shirt, Sparkles, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -18,9 +18,10 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogFooter,
 } from '@/components/ui/dialog';
 import {
   AlertDialog,
@@ -71,6 +72,9 @@ const emptyPackage: Partial<Package> = {
   notes: '',
 };
 
+const money = (value?: number) =>
+  `KSh ${Number(value || 0).toLocaleString('en-KE', { maximumFractionDigits: 0 })}`;
+
 function inclusionItems(pkg: Package): string[] {
   const items: string[] = [];
   if (pkg.makeup) items.push('Professional makeup');
@@ -86,36 +90,45 @@ export default function PackagesPage() {
   const [packages, setPackages] = useState<Package[]>([]);
   const [editing, setEditing] = useState<Partial<Package> | null>(null);
   const [isNew, setIsNew] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Package | null>(null);
+  const [errorMessage, setErrorMessage] = useState('');
 
-  const fetchPackages = async () => {
+  const fetchPackages = useCallback(async () => {
     setLoading(true);
+    setErrorMessage('');
     try {
       const res = await api.get(`${API_BASE}/api/bookings/packages`);
       const data = Array.isArray(res.data) ? res.data : [];
-      data.sort((a: Package, b: Package) => a.price - b.price);
+      data.sort((a: Package, b: Package) => Number(a.price || 0) - Number(b.price || 0));
       setPackages(data);
-    } catch (err) {
-      setPackages([]);
+    } catch (error) {
+      console.error('Failed to load packages:', error);
+      setErrorMessage('Packages could not be loaded. Check your connection and try again.');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
-  };
-
-  useEffect(() => {
-    fetchPackages();
   }, []);
 
-  const handleEdit = (pkg: Package) => {
-    setEditing(pkg);
-    setIsNew(false);
-  };
+  useEffect(() => {
+    void fetchPackages();
+  }, [fetchPackages]);
 
-  const handleDelete = async () => {
-    if (!deleteTarget) return;
-    await api.delete(`${API_BASE}/api/bookings/packages/${deleteTarget.id}`);
-    setDeleteTarget(null);
-    fetchPackages();
+  const packageStats = useMemo(() => {
+    if (packages.length === 0) return { count: 0, lowestPrice: 0, highestPrice: 0 };
+    const prices = packages.map((pkg) => Number(pkg.price || 0));
+    return {
+      count: packages.length,
+      lowestPrice: Math.min(...prices),
+      highestPrice: Math.max(...prices),
+    };
+  }, [packages]);
+
+  const handleEdit = (pkg: Package) => {
+    setEditing({ ...pkg });
+    setIsNew(false);
   };
 
   const handleAdd = () => {
@@ -123,134 +136,206 @@ export default function PackagesPage() {
     setIsNew(true);
   };
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-    const { name, value, type } = e.target;
-    let fieldValue: any = value;
-    if (type === 'checkbox' && 'checked' in e.target) {
-      fieldValue = (e.target as HTMLInputElement).checked;
-    }
-    setEditing(editing => ({ ...editing!, [name]: fieldValue }));
+  const closeEditor = () => {
+    if (!saving) setEditing(null);
   };
 
-  const setField = (name: keyof Package, value: any) => {
-    setEditing(editing => ({ ...editing!, [name]: value }));
+  const handleChange = (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    const { name, value, type } = event.target;
+    const nextValue = type === 'number' ? (value === '' ? '' : Number(value)) : value;
+    setEditing((current) => current ? { ...current, [name]: nextValue } : current);
   };
 
-  const handleSave = async () => {
-    if (!editing) return;
+  const setField = (name: keyof Package, value: string | number | boolean) => {
+    setEditing((current) => current ? { ...current, [name]: value } : current);
+  };
+
+  const handleSave = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!editing || saving) return;
+
     const payload = {
       ...editing,
-      price: editing.price ? Number(editing.price) : 0,
-      deposit: editing.deposit ? Number(editing.deposit) : 0,
-      images: editing.images ? Number(editing.images) : 0,
-      outfits: editing.outfits ? Number(editing.outfits) : 0,
+      name: editing.name?.trim() || '',
+      price: Number(editing.price || 0),
+      deposit: Number(editing.deposit || 0),
+      images: Number(editing.images || 0),
+      outfits: Number(editing.outfits || 0),
     };
-    if (isNew) {
-      await api.post(`${API_BASE}/api/bookings/packages`, payload);
-    } else {
-      await api.put(`${API_BASE}/api/bookings/packages/${editing.id}`, payload);
+
+    if (!payload.name) return;
+    if ([payload.price, payload.deposit, payload.images, payload.outfits].some((value) => !Number.isFinite(value) || value < 0)) {
+      setErrorMessage('Price, deposit, images and outfits must be valid non-negative numbers.');
+      return;
     }
-    setEditing(null);
-    fetchPackages();
+
+    setSaving(true);
+    setErrorMessage('');
+    try {
+      if (isNew) {
+        await api.post(`${API_BASE}/api/bookings/packages`, payload);
+      } else if (editing.id) {
+        await api.put(`${API_BASE}/api/bookings/packages/${editing.id}`, payload);
+      } else {
+        throw new Error('Package ID is missing.');
+      }
+      setEditing(null);
+      await fetchPackages();
+    } catch (error: any) {
+      console.error('Failed to save package:', error);
+      setErrorMessage(error?.response?.data?.message || error?.message || 'The package could not be saved. Please try again.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!deleteTarget || deleting) return;
+    setDeleting(true);
+    setErrorMessage('');
+    try {
+      await api.delete(`${API_BASE}/api/bookings/packages/${deleteTarget.id}`);
+      setDeleteTarget(null);
+      await fetchPackages();
+    } catch (error: any) {
+      console.error('Failed to delete package:', error);
+      setErrorMessage(error?.response?.data?.message || 'The package could not be deleted. Please try again.');
+    } finally {
+      setDeleting(false);
+    }
   };
 
   return (
-    <div className="max-w-5xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-semibold text-foreground">Packages</h1>
-        <Button onClick={handleAdd} size="sm" className="gap-1.5">
-          <Plus size={16} />
-          Add Package
+    <div className="mx-auto w-full max-w-6xl space-y-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight text-foreground">Packages</h1>
+          <p className="mt-0.5 text-sm text-muted-foreground">Manage session editions, pricing and inclusions.</p>
+        </div>
+        <Button onClick={handleAdd} size="sm" className="h-9 gap-1.5 self-start sm:self-auto">
+          <Plus className="h-4 w-4" />
+          Add package
         </Button>
       </div>
 
-      {loading ? (
-        <div className="flex items-center justify-center py-24 text-muted-foreground text-sm">Loading…</div>
-      ) : packages.length === 0 ? (
-        <div className="text-center py-24 border border-dashed border-border rounded-lg">
-          <Camera size={28} className="mx-auto mb-3 text-muted-foreground" />
-          <p className="text-sm font-medium text-foreground">No packages yet</p>
-          <p className="text-sm text-muted-foreground mt-1">Add your first package to get started.</p>
-        </div>
-      ) : (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {packages.map(pkg => {
-            const color = getPackageColor(pkg.name);
-            const inclusions = inclusionItems(pkg);
-            return (
-              <article key={pkg.id} className="relative overflow-hidden rounded-xl border border-border bg-card shadow-sm transition-shadow hover:shadow-md">
-                <div className="h-1.5" style={{ backgroundColor: color }} />
-                <div className="p-5">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.16em]" style={{ color }}>{pkg.type || 'Studio edition'}</p>
-                      <h2 className="mt-1 text-xl font-semibold tracking-tight text-foreground">{pkg.name}</h2>
-                    </div>
-                    <div className="flex gap-1">
-                      <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`Edit ${pkg.name}`} onClick={() => handleEdit(pkg)}>
-                        <Pencil size={14} />
-                      </Button>
-                      <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" aria-label={`Delete ${pkg.name}`} onClick={() => setDeleteTarget(pkg)}>
-                        <Trash2 size={14} />
-                      </Button>
-                    </div>
-                  </div>
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-y border-border py-2.5 text-sm">
+        <div><span className="text-muted-foreground">Packages</span><span className="ml-2 font-medium tabular-nums">{packageStats.count}</span></div>
+        <div><span className="text-muted-foreground">Price range</span><span className="ml-2 font-medium tabular-nums">{packages.length ? `${money(packageStats.lowestPrice)} – ${money(packageStats.highestPrice)}` : '—'}</span></div>
+        <div className="ml-auto text-xs text-muted-foreground">Sorted by price</div>
+      </div>
 
-                  <div className="mt-5 flex items-end justify-between border-b border-border pb-4">
-                    <div>
-                      <p className="text-2xl font-semibold tracking-tight text-foreground">KSH {pkg.price.toLocaleString()}</p>
-                      <p className="mt-1 text-xs text-muted-foreground">Deposit KSH {pkg.deposit.toLocaleString()}</p>
-                    </div>
-                    <span className="rounded-full px-2.5 py-1 text-xs font-medium" style={{ color, backgroundColor: `${color}18` }}>
-                      {pkg.name.toLowerCase().includes('goddess') ? 'Flagship' : 'Edition'}
-                    </span>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-3 py-4 text-sm">
-                    <div className="flex items-center gap-2 text-muted-foreground"><Clock3 size={15} style={{ color }} /><span><strong className="font-medium text-foreground">{pkg.duration || '—'}</strong><br /><span className="text-xs">studio time</span></span></div>
-                    <div className="flex items-center gap-2 text-muted-foreground"><Images size={15} style={{ color }} /><span><strong className="font-medium text-foreground">{pkg.images}</strong><br /><span className="text-xs">edited photos</span></span></div>
-                    <div className="flex items-center gap-2 text-muted-foreground"><Shirt size={15} style={{ color }} /><span><strong className="font-medium text-foreground">{pkg.outfits}</strong><br /><span className="text-xs">outfits</span></span></div>
-                    <div className="flex items-center gap-2 text-muted-foreground"><Sparkles size={15} style={{ color }} /><span><strong className="font-medium text-foreground">{pkg.wig ? 'Included' : '—'}</strong><br /><span className="text-xs">styled wig</span></span></div>
-                  </div>
-
-                  <div className="space-y-2 border-t border-border pt-4">
-                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Included in this edition</p>
-                    {inclusions.length > 0 ? (
-                      <div className="flex flex-wrap gap-1.5">
-                        {inclusions.map(item => <span key={item} className="rounded-md bg-muted px-2 py-1 text-xs text-foreground">{item}</span>)}
-                      </div>
-                    ) : <p className="text-sm text-muted-foreground">Core studio session</p>}
-                  </div>
-
-                  {(pkg.photobook || pkg.mount) && <div className="mt-4 flex gap-3 text-xs text-muted-foreground"><BookOpen size={14} /><span>{pkg.photobook ? `Photobook${pkg.photobookSize ? ` ${pkg.photobookSize}` : ''}` : ''}{pkg.photobook && pkg.mount ? ' · ' : ''}{pkg.mount ? 'Fine-art mount' : ''}</span></div>}
-                </div>
-              </article>
-            );
-          })}
+      {errorMessage && !editing && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive" role="alert">
+          <span>{errorMessage}</span>
+          <Button variant="outline" size="sm" className="h-7" onClick={() => void fetchPackages()}>
+            <RefreshCw className="mr-1.5 h-3.5 w-3.5" /> Retry
+          </Button>
         </div>
       )}
 
-      {/* Add/Edit Dialog */}
-      <Dialog open={!!editing} onOpenChange={(open) => !open && setEditing(null)}>
-        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+      {loading ? (
+        <div className="space-y-3 py-8" aria-label="Loading packages">
+          {[0, 1, 2, 3].map((item) => (
+            <div key={item} className="h-14 animate-pulse rounded-md bg-muted/60" />
+          ))}
+        </div>
+      ) : errorMessage && packages.length === 0 ? null : packages.length === 0 ? (
+        <div className="rounded-md border border-dashed border-border px-4 py-14 text-center">
+          <Camera className="mx-auto mb-3 h-7 w-7 text-muted-foreground/60" />
+          <p className="text-sm font-medium text-foreground">No packages yet</p>
+          <p className="mt-1 text-sm text-muted-foreground">Add your first package to get started.</p>
+          <Button onClick={handleAdd} size="sm" variant="outline" className="mt-4 h-8 gap-1.5">
+            <Plus className="h-3.5 w-3.5" /> Add package
+          </Button>
+        </div>
+      ) : (
+        <div className="overflow-hidden rounded-md border border-border bg-card">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[900px] border-collapse text-sm">
+              <thead>
+                <tr className="border-b border-border bg-muted/35 text-left text-xs font-medium text-muted-foreground">
+                  <th className="px-3 py-2.5 font-medium">Package</th>
+                  <th className="px-3 py-2.5 font-medium">Price / deposit</th>
+                  <th className="px-3 py-2.5 font-medium">Session details</th>
+                  <th className="px-3 py-2.5 font-medium">Included</th>
+                  <th className="w-20 px-3 py-2.5 text-right font-medium">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {packages.map((pkg) => {
+                  const color = getPackageColor(pkg.name);
+                  const inclusions = inclusionItems(pkg);
+                  return (
+                    <tr key={pkg.id} className="border-b border-border/70 last:border-0 hover:bg-muted/20">
+                      <td className="px-3 py-3 align-top">
+                        <div className="flex items-start gap-2.5">
+                          <span className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: color }} />
+                          <div className="min-w-0">
+                            <p className="font-medium text-foreground">{pkg.name}</p>
+                            <Badge variant="outline" className="mt-1 h-5 px-1.5 text-[10px] font-normal capitalize">{pkg.type || 'studio'}</Badge>
+                            {pkg.notes?.trim() && <p className="mt-1 max-w-[220px] truncate text-xs text-muted-foreground" title={pkg.notes}>{pkg.notes}</p>}
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-3 py-3 align-top">
+                        <p className="font-medium tabular-nums text-foreground">{money(pkg.price)}</p>
+                        <p className="mt-1 text-xs tabular-nums text-muted-foreground">Deposit {money(pkg.deposit)}</p>
+                      </td>
+                      <td className="px-3 py-3 align-top">
+                        <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
+                          <span className="flex items-center gap-1.5 text-muted-foreground"><Clock3 className="h-3.5 w-3.5 shrink-0" /><span className="text-foreground">{pkg.duration || '—'}</span></span>
+                          <span className="flex items-center gap-1.5 text-muted-foreground"><Images className="h-3.5 w-3.5 shrink-0" /><span className="text-foreground">{pkg.images} photos</span></span>
+                          <span className="flex items-center gap-1.5 text-muted-foreground"><Shirt className="h-3.5 w-3.5 shrink-0" /><span className="text-foreground">{pkg.outfits} outfits</span></span>
+                          <span className="flex items-center gap-1.5 text-muted-foreground"><Sparkles className="h-3.5 w-3.5 shrink-0" /><span className="text-foreground">{pkg.wig ? 'Wig included' : 'No wig'}</span></span>
+                        </div>
+                      </td>
+                      <td className="px-3 py-3 align-top">
+                        {inclusions.length > 0 ? (
+                          <div className="flex max-w-[360px] flex-wrap gap-1">
+                            {inclusions.map((item) => <span key={item} className="rounded bg-muted px-1.5 py-1 text-[11px] text-muted-foreground">{item}</span>)}
+                          </div>
+                        ) : <span className="text-xs text-muted-foreground">Core studio session</span>}
+                      </td>
+                      <td className="px-3 py-3 text-right align-top">
+                        <div className="inline-flex items-center gap-1">
+                          <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`Edit ${pkg.name}`} onClick={() => handleEdit(pkg)}>
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" aria-label={`Delete ${pkg.name}`} onClick={() => setDeleteTarget(pkg)}>
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="border-t border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+            {packages.length} {packages.length === 1 ? 'package' : 'packages'}
+          </div>
+        </div>
+      )}
+
+      <Dialog open={!!editing} onOpenChange={(open) => !open && closeEditor()}>
+        <DialogContent className="max-h-[88vh] max-w-xl overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{isNew ? 'Add Package' : 'Edit Package'}</DialogTitle>
+            <DialogTitle>{isNew ? 'Add package' : 'Edit package'}</DialogTitle>
+            <DialogDescription>Set the package price, session details and included services.</DialogDescription>
           </DialogHeader>
 
           {editing && (
-            <form onSubmit={e => { e.preventDefault(); handleSave(); }} className="space-y-4">
-              <div>
-                <Label htmlFor="name">Name</Label>
-                <Input id="name" name="name" value={editing.name || ''} onChange={handleChange} placeholder="e.g. Gold Package" required className="mt-1.5" />
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
+            <form onSubmit={handleSave} className="space-y-4">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="sm:col-span-2">
+                  <Label htmlFor="name">Package name</Label>
+                  <Input id="name" name="name" value={editing.name || ''} onChange={handleChange} placeholder="e.g. The Bloom" required className="mt-1.5 h-9" />
+                </div>
                 <div>
                   <Label htmlFor="type">Type</Label>
-                  <Select value={editing.type || 'studio'} onValueChange={(v) => setField('type', v)}>
-                    <SelectTrigger id="type" className="mt-1.5">
-                      <SelectValue />
-                    </SelectTrigger>
+                  <Select value={editing.type || 'studio'} onValueChange={(value) => setField('type', value)}>
+                    <SelectTrigger id="type" className="mt-1.5 h-9"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="studio">Studio</SelectItem>
                       <SelectItem value="outdoor">Outdoor</SelectItem>
@@ -259,84 +344,83 @@ export default function PackagesPage() {
                 </div>
                 <div>
                   <Label htmlFor="duration">Duration</Label>
-                  <Input id="duration" name="duration" value={editing.duration || ''} onChange={handleChange} placeholder="e.g. 2 hrs" required className="mt-1.5" />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <Label htmlFor="price">Price (KSH)</Label>
-                  <Input id="price" name="price" type="number" value={editing.price ?? 0} onChange={handleChange} required className="mt-1.5" />
+                  <Input id="duration" name="duration" value={editing.duration || ''} onChange={handleChange} placeholder="e.g. 2 hrs" required className="mt-1.5 h-9" />
                 </div>
                 <div>
-                  <Label htmlFor="deposit">Deposit (KSH)</Label>
-                  <Input id="deposit" name="deposit" type="number" value={editing.deposit ?? 0} onChange={handleChange} required className="mt-1.5" />
+                  <Label htmlFor="price">Price (KSh)</Label>
+                  <Input id="price" name="price" type="number" min="0" step="1" value={editing.price ?? 0} onChange={handleChange} required className="mt-1.5 h-9" />
                 </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <Label htmlFor="images">Images</Label>
-                  <Input id="images" name="images" type="number" value={editing.images ?? 0} onChange={handleChange} required className="mt-1.5" />
+                  <Label htmlFor="deposit">Deposit (KSh)</Label>
+                  <Input id="deposit" name="deposit" type="number" min="0" step="1" value={editing.deposit ?? 0} onChange={handleChange} required className="mt-1.5 h-9" />
+                </div>
+                <div>
+                  <Label htmlFor="images">Edited photos</Label>
+                  <Input id="images" name="images" type="number" min="0" step="1" value={editing.images ?? 0} onChange={handleChange} required className="mt-1.5 h-9" />
                 </div>
                 <div>
                   <Label htmlFor="outfits">Outfits</Label>
-                  <Input id="outfits" name="outfits" type="number" value={editing.outfits ?? 0} onChange={handleChange} required className="mt-1.5" />
+                  <Input id="outfits" name="outfits" type="number" min="0" step="1" value={editing.outfits ?? 0} onChange={handleChange} required className="mt-1.5 h-9" />
                 </div>
               </div>
 
-              <div className="space-y-3 pt-2 border-t border-border">
-                {[
-                  { key: 'makeup', label: 'Professional makeup' },
-                  { key: 'styling', label: 'Styling included' },
-                  { key: 'photobook', label: 'Photobook included' },
-                  { key: 'mount', label: 'A3 mount included' },
-                  { key: 'balloonBackdrop', label: 'Balloon backdrop' },
-                  { key: 'wig', label: 'Styled wig' },
-                ].map(({ key, label }) => (
-                  <div key={key} className="flex items-center justify-between">
-                    <Label htmlFor={key} className="font-normal text-foreground">{label}</Label>
-                    <Switch
-                      id={key}
-                      checked={!!(editing as any)[key]}
-                      onCheckedChange={(checked) => setField(key as keyof Package, checked)}
-                    />
-                  </div>
-                ))}
+              <div className="space-y-2 border-y border-border py-3">
+                <p className="text-xs font-medium text-muted-foreground">Package inclusions</p>
+                <div className="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
+                  {[
+                    { key: 'makeup', label: 'Professional makeup' },
+                    { key: 'styling', label: 'Outfit styling' },
+                    { key: 'photobook', label: 'Photobook' },
+                    { key: 'mount', label: 'Fine-art mount' },
+                    { key: 'balloonBackdrop', label: 'Balloon + flower backdrop' },
+                    { key: 'wig', label: 'Styled wig' },
+                  ].map(({ key, label }) => (
+                    <div key={key} className="flex min-h-8 items-center justify-between gap-3">
+                      <Label htmlFor={key} className="text-sm font-normal">{label}</Label>
+                      <Switch id={key} checked={Boolean(editing[key as keyof Package])} onCheckedChange={(checked) => setField(key as keyof Package, checked)} />
+                    </div>
+                  ))}
+                </div>
                 {editing.photobook && (
-                  <Input
-                    name="photobookSize"
-                    value={editing.photobookSize || ''}
-                    onChange={handleChange}
-                    placeholder='Photobook size, e.g. 8x8"'
-                  />
+                  <div className="pt-1">
+                    <Label htmlFor="photobookSize">Photobook size</Label>
+                    <Input id="photobookSize" name="photobookSize" value={editing.photobookSize || ''} onChange={handleChange} placeholder={'e.g. 8x8"'} className="mt-1.5 h-9 sm:max-w-[220px]" />
+                  </div>
                 )}
               </div>
 
               <div>
                 <Label htmlFor="notes">Notes</Label>
-                <Textarea id="notes" name="notes" value={editing.notes || ''} onChange={handleChange} placeholder="Additional details…" className="mt-1.5 min-h-[80px]" />
+                <Textarea id="notes" name="notes" value={editing.notes || ''} onChange={handleChange} placeholder="Additional package details…" className="mt-1.5 min-h-[72px] resize-y" />
               </div>
 
-              <DialogFooter>
-                <Button type="button" variant="outline" onClick={() => setEditing(null)}>Cancel</Button>
-                <Button type="submit">Save Package</Button>
+              {errorMessage && (
+                <p className="text-sm text-destructive" role="alert">{errorMessage}</p>
+              )}
+
+              <DialogFooter className="gap-2 sm:gap-0">
+                <Button type="button" variant="outline" onClick={() => setEditing(null)} disabled={saving}>Cancel</Button>
+                <Button type="submit" disabled={saving || !editing.name?.trim()}>
+                  {saving ? 'Saving…' : isNew ? 'Add package' : 'Save changes'}
+                </Button>
               </DialogFooter>
             </form>
           )}
         </DialogContent>
       </Dialog>
 
-      {/* Delete confirmation */}
-      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && !deleting && setDeleteTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete {deleteTarget?.name}?</AlertDialogTitle>
-            <AlertDialogDescription>This can't be undone.</AlertDialogDescription>
+            <AlertDialogDescription>This package will be permanently deleted. This action cannot be undone.</AlertDialogDescription>
           </AlertDialogHeader>
+          {errorMessage && <p className="text-sm text-destructive" role="alert">{errorMessage}</p>}
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">Delete</AlertDialogAction>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={(event) => { event.preventDefault(); void handleDelete(); }} disabled={deleting} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+              {deleting ? 'Deleting…' : 'Delete package'}
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

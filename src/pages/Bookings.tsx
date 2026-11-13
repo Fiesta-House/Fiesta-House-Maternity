@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { DataTable, Badge } from '@/components/DataTable';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -14,32 +14,55 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from '@/components/ui/dialog';
 import { Calendar } from '@/components/ui/calendar';
 import { Label } from '@/components/ui/label';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import {
-  Search, Plus, Calendar as CalendarIcon, Clock, RefreshCw, CheckCircle, FileText, Send, List,
-  MoreVertical, Edit, History, X, Check, Info, CreditCard, Download, ExternalLink, ShieldCheck, Bell, MessageCircle, Sparkles
+  Search,
+  Plus,
+  CalendarDays,
+  RefreshCw,
+  FileText,
+  Send,
+  MoreHorizontal,
+  Edit,
+  History,
+  X,
+  Check,
+  Info,
+  CreditCard,
+  Download,
+  ExternalLink,
+  ShieldCheck,
+  Bell,
+  MessageCircle,
+  Sparkles,
+  ChevronRight,
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
-import { listBookings, getServices, getAvailableHours, updateBookingDraft, getCalendarEvents, getBooking, updateBooking, Service, Package } from '@/api/bookings';
-import { invoicesApi, Invoice } from '@/api/invoices';
-import { followupsApi, Followup } from '@/api/followups';
-import { remindersApi, Reminder } from '@/api/reminders';
+import {
+  listBookings,
+  getAvailableHours,
+  updateBookingDraft,
+  getBooking,
+  updateBooking,
+  getCustomerBookings,
+  type Package,
+} from '@/api/bookings';
+import { invoicesApi, type Invoice } from '@/api/invoices';
+import { followupsApi, type Followup } from '@/api/followups';
+import { remindersApi, type Reminder } from '@/api/reminders';
 import { getCustomer } from '@/api/customers';
-import { getCustomerBookings } from '@/api/bookings';
 import api from '@/api/apiInstance';
 import { API_BASE_URL as API_BASE } from '@/config';
 import { apiFetch } from '@/api/apiFetch';
 import { useAuth } from '@/hooks/useAuth';
 import { useNavigate } from 'react-router-dom';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { getPackageColor } from '@/utils/packageColors';
 import { PageHeader } from '@/components/PageHeader';
-import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
-import { DayContentProps } from 'react-day-picker';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import type { DayContentProps } from 'react-day-picker';
 
 interface Booking {
   id: string;
@@ -48,13 +71,18 @@ interface Booking {
   service: string;
   date: Date;
   time: string;
+  timeValue: string;
   durationMinutes?: number;
   recipientName?: string;
   status: 'provisional' | 'confirmed' | 'cancelled';
   googleEventId?: string;
 }
 
-/** Format a raw phone string for display (e.g. 254721840961 -> +254 721 840 961) */
+interface BookingHour {
+  time: string;
+  available: boolean;
+}
+
 function formatPhoneDisplay(phone: string): string {
   if (!phone || !phone.trim()) return phone;
   const digits = phone.replace(/\D/g, '');
@@ -65,26 +93,46 @@ function formatPhoneDisplay(phone: string): string {
   return `+${digits.slice(0, 3)} ${digits.slice(3, 6)} ${digits.slice(6)}`;
 }
 
-/** Shorten "Messenger User 24720119027667423" to "Messenger - ...7623" */
 function shortenMessengerDisplay(name: string): string {
   if (!name || !name.trim()) return name;
   const match = name.match(/^Messenger\s+User\s+(\d+)$/i);
-  if (match) return `Messenger - ...${match[1].slice(-4)}`;
-  return name;
+  return match ? `Messenger - ...${match[1].slice(-4)}` : name;
 }
 
-function generateFallbackHours(date: Date): { time: string; available: boolean }[] {
-  const hours: { time: string; available: boolean }[] = [];
-  const baseDate = new Date(date);
-  baseDate.setHours(9, 0, 0, 0);
-  for (let h = 9; h < 17; h++) {
-    for (let m = 0; m < 60; m += 30) {
-      const slot = new Date(baseDate);
-      slot.setHours(h, m, 0, 0);
-      hours.push({ time: slot.toISOString(), available: true });
-    }
+function dateKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function dateInputValue(date: Date): string {
+  return dateKey(date);
+}
+
+function getStatusClass(status: string): string {
+  switch (status) {
+    case 'confirmed':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    case 'provisional':
+      return 'border-amber-200 bg-amber-50 text-amber-700';
+    case 'cancelled':
+      return 'border-red-200 bg-red-50 text-red-700';
+    default:
+      return 'border-border bg-muted text-muted-foreground';
   }
-  return hours;
+}
+
+function formatDate(date: Date, options?: Intl.DateTimeFormatOptions): string {
+  return date.toLocaleDateString('en-GB', options || { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+function formatTime(date: Date): string {
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function toDateTime(date: Date, time: string): string {
+  const value = new Date(date);
+  const [hours, minutes] = time.split(':').map(Number);
+  value.setHours(hours, minutes, 0, 0);
+  return value.toISOString();
 }
 
 export default function Bookings() {
@@ -95,29 +143,26 @@ export default function Bookings() {
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
-  const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [packageFilter, setPackageFilter] = useState<string>('all');
-  const [dateRange, setDateRange] = useState<{ from?: Date; to?: Date }>({});
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [packageFilter, setPackageFilter] = useState('all');
+  const [showSchedule, setShowSchedule] = useState(false);
 
-  const [isDialogOpen, setIsDialogOpen] = useState(false);
-  const [selectedDate, setSelectedDate] = useState<Date | undefined>(new Date());
-  const [selectedService, setSelectedService] = useState<string>('');
-  const [selectedTime, setSelectedTime] = useState<string>('');
-  const [services, setServices] = useState<Service[]>([]);
-  const [availableHours, setAvailableHours] = useState<{ time: string; available: boolean }[]>([]);
-  const [creating, setCreating] = useState(false);
   const [packages, setPackages] = useState<Package[]>([]);
-  const [selectedPackage, setSelectedPackage] = useState<string>('');
-  const [isPaymentPending, setIsPaymentPending] = useState(false);
+  const [selectedPackage, setSelectedPackage] = useState('');
+  const [selectedService, setSelectedService] = useState('');
+  const [selectedDate, setSelectedDate] = useState<Date | undefined>(new Date());
+  const [selectedTime, setSelectedTime] = useState('');
+  const [availableHours, setAvailableHours] = useState<BookingHour[]>([]);
   const [recipientName, setRecipientName] = useState('');
   const [recipientPhone, setRecipientPhone] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<'mpesa' | 'pod'>('mpesa');
+  const [newBookingOpen, setNewBookingOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [isPaymentPending, setIsPaymentPending] = useState(false);
 
-  const [calendarEvents, setCalendarEvents] = useState<any[]>([]);
   const [syncing, setSyncing] = useState(false);
   const [invoices, setInvoices] = useState<Record<string, Invoice>>({});
   const [generatingInvoice, setGeneratingInvoice] = useState<string | null>(null);
-
   const [statistics, setStatistics] = useState({ total: 0, confirmed: 0, provisional: 0, cancelled: 0, revenue: 0 });
 
   const [selectedBookingDetails, setSelectedBookingDetails] = useState<Booking | null>(null);
@@ -128,112 +173,100 @@ export default function Bookings() {
   const [bookingFollowups, setBookingFollowups] = useState<Followup[]>([]);
   const [bookingPayments, setBookingPayments] = useState<any[]>([]);
 
-  const bookingAddons: any[] = Array.isArray(fullBookingData?.bookingAddons) ? fullBookingData.bookingAddons : [];
-  const addonsTotal = bookingAddons.reduce((sum, addon) => sum + (addon.totalPrice || 0), 0);
-
   const [editingBooking, setEditingBooking] = useState<Booking | null>(null);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
-  const [rescheduleDate, setRescheduleDate] = useState<Date | undefined>(undefined);
-  const [rescheduleTime, setRescheduleTime] = useState<string>('');
-  const [rescheduleService, setRescheduleService] = useState<string>('');
+  const [rescheduleDate, setRescheduleDate] = useState<Date | undefined>();
+  const [rescheduleTime, setRescheduleTime] = useState('');
+  const [rescheduleService, setRescheduleService] = useState('');
   const [savingBooking, setSavingBooking] = useState(false);
-  const [rescheduleAvailableHours, setRescheduleAvailableHours] = useState<{ time: string; available: boolean }[]>([]);
+  const [rescheduleAvailableHours, setRescheduleAvailableHours] = useState<BookingHour[]>([]);
   const [loadingRescheduleHours, setLoadingRescheduleHours] = useState(false);
 
   const [customerContextOpen, setCustomerContextOpen] = useState(false);
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
   const [customerHistory, setCustomerHistory] = useState<any>(null);
   const [loadingCustomerHistory, setLoadingCustomerHistory] = useState(false);
-  const [showCalendarPanel, setShowCalendarPanel] = useState(true);
-  const [showAllBookings, setShowAllBookings] = useState(false);
-  const [timelineKey, setTimelineKey] = useState('');
-  const timelineRef = useRef<HTMLDivElement>(null);
 
-  const getPackageById = (id: string) => packages.find(pkg => pkg.id === id);
+  const scheduleRef = useRef<HTMLDivElement>(null);
+
+  const bookingAddons: any[] = Array.isArray(fullBookingData?.bookingAddons)
+    ? fullBookingData.bookingAddons
+    : [];
+  const addonsTotal = bookingAddons.reduce((sum, addon) => sum + (Number(addon.totalPrice) || 0), 0);
+
+  const getPackageById = (id: string) => packages.find((pkg) => pkg.id === id);
 
   const fetchBookings = async () => {
     try {
       const response = await listBookings();
-      const formatted: Booking[] = response.bookings.map((b: any) => {
-        const isId = (str: string) => !!str && /^[a-z0-9]{20,}$/i.test(str.trim());
-        let name = b.customer.name;
-        if (name && name.startsWith('WhatsApp User ')) name = name.replace(/^WhatsApp User\s+/, '');
+      const formatted: Booking[] = response.bookings.map((booking: any) => {
+        const isId = (value: string) => !!value && /^[a-z0-9]{20,}$/i.test(value.trim());
+        let name = booking.customer?.name || '';
+        if (name.startsWith('WhatsApp User ')) name = name.replace(/^WhatsApp User\s+/, '');
         name = shortenMessengerDisplay(name);
         if (!name || name.trim().toLowerCase() === 'admin user' || isId(name)) {
-          name = b.customer.phone && !isId(b.customer.phone) ? formatPhoneDisplay(b.customer.phone) : 'No Name / No Phone';
+          name = booking.customer?.phone && !isId(booking.customer.phone)
+            ? formatPhoneDisplay(booking.customer.phone)
+            : 'No name / no phone';
         }
+
+        const date = new Date(booking.dateTime);
         return {
-          id: b.id,
+          id: booking.id,
           customerName: name,
-          customerPhone: b.customer.phone ? formatPhoneDisplay(b.customer.phone) : '',
-          service: b.service,
-          date: new Date(b.dateTime),
-          time: new Date(b.dateTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          durationMinutes: b.durationMinutes || undefined,
-          recipientName: b.recipientName || undefined,
-          status: b.status,
-          googleEventId: b.googleEventId,
+          customerPhone: booking.customer?.phone ? formatPhoneDisplay(booking.customer.phone) : '',
+          service: booking.service,
+          date,
+          time: formatTime(date),
+          timeValue: `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`,
+          durationMinutes: booking.durationMinutes || undefined,
+          recipientName: booking.recipientName || undefined,
+          status: booking.status,
+          googleEventId: booking.googleEventId,
         };
       });
       setBookings(formatted);
-    } catch (error) {
-      toast({ title: 'Error', description: 'Failed to load bookings', variant: 'destructive' });
+    } catch {
+      toast({ title: 'Could not load bookings', description: 'Please refresh the page and try again.', variant: 'destructive' });
     } finally {
       setLoading(false);
     }
   };
 
-  const fetchServices = async () => {
-    try {
-      const data = await getServices();
-      setServices(data);
-      if (data.length > 0) setSelectedService(data[0].name);
-    } catch {
-      toast({ title: 'Error', description: 'Failed to load services', variant: 'destructive' });
-    }
-  };
-
   const fetchPackages = async () => {
     try {
-      const res = await api.get(`${API_BASE}/api/bookings/packages`);
-      const pkgs = Array.isArray(res.data) ? res.data : [];
-      setPackages(pkgs);
-      if (pkgs.length > 0) {
-        setSelectedPackage(pkgs[0].id);
-        setSelectedService(pkgs[0].name);
+      const response = await api.get(`${API_BASE}/api/bookings/packages`);
+      const rows = Array.isArray(response.data) ? response.data : [];
+      setPackages(rows);
+      if (rows.length > 0) {
+        setSelectedPackage((current) => current || rows[0].id);
+        setSelectedService((current) => current || rows[0].name);
       }
     } catch {
       setPackages([]);
-    }
-  };
-
-  const fetchCalendarEvents = async () => {
-    try {
-      setCalendarEvents(await getCalendarEvents());
-    } catch {
-      toast({ title: 'Error', description: 'Failed to load calendar events', variant: 'destructive' });
+      toast({ title: 'Could not load packages', description: 'Packages are temporarily unavailable.', variant: 'destructive' });
     }
   };
 
   const fetchInvoices = async () => {
     try {
-      const all = await invoicesApi.getAllInvoices();
+      const rows = await invoicesApi.getAllInvoices();
       const map: Record<string, Invoice> = {};
-      all.forEach(inv => { map[inv.bookingId] = inv; });
+      rows.forEach((invoice) => { map[invoice.bookingId] = invoice; });
       setInvoices(map);
     } catch (error) {
       console.error('Failed to fetch invoices:', error);
     }
   };
 
-  const fetchStatistics = async () => {
+  const fetchStatistics = async (total: number) => {
     try {
       const [statusCounts, revenue] = await Promise.all([
         api.get(`${API_BASE}/api/analytics/booking-status-counts`).catch(() => ({ data: {} })),
         api.get(`${API_BASE}/api/analytics/revenue`).catch(() => ({ data: { total: 0 } })),
       ]);
       setStatistics({
-        total: bookings.length,
+        total,
         confirmed: statusCounts.data?.confirmed || 0,
         provisional: statusCounts.data?.provisional || 0,
         cancelled: statusCounts.data?.cancelled || 0,
@@ -241,69 +274,85 @@ export default function Bookings() {
       });
     } catch (error) {
       console.error('Failed to fetch statistics:', error);
+      setStatistics((current) => ({ ...current, total }));
     }
   };
 
   useEffect(() => {
-    fetchBookings();
-    fetchServices();
-    fetchPackages();
-    fetchCalendarEvents();
-    fetchInvoices();
-    // Lighter polling than a full-page refresh every few seconds - just enough
-    // to catch bookings made via WhatsApp/Instagram while this page is open.
-    const pollInterval = setInterval(() => {
-      fetchBookings();
-      fetchCalendarEvents();
+    void fetchBookings();
+    void fetchPackages();
+    void fetchInvoices();
+
+    const pollInterval = window.setInterval(() => {
+      void fetchBookings();
     }, 20000);
-    return () => clearInterval(pollInterval);
+
+    return () => window.clearInterval(pollInterval);
+    // Initial load and polling intentionally use the same page-level fetchers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    if (bookings.length > 0) fetchStatistics();
+    void fetchStatistics(bookings.length);
+    // Refresh status counts and revenue whenever the booking list refreshes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bookings]);
 
   useEffect(() => {
-    if (selectedPackage && packages.length > 0) {
-      const pkg = packages.find(p => p.id === selectedPackage);
-      if (pkg && pkg.name !== selectedService) setSelectedService(pkg.name);
-    }
-  }, [selectedPackage, packages]);
+    if (!selectedPackage || packages.length === 0) return;
+    const pkg = packages.find((item) => item.id === selectedPackage);
+    if (pkg && pkg.name !== selectedService) setSelectedService(pkg.name);
+  }, [selectedPackage, packages, selectedService]);
 
   useEffect(() => {
-    if (!selectedDate) {
+    if (!selectedDate || !newBookingOpen || !selectedService) {
       setAvailableHours([]);
       return;
     }
-    const pad = (n: number) => n.toString().padStart(2, '0');
-    const dateStr = `${selectedDate.getFullYear()}-${pad(selectedDate.getMonth() + 1)}-${pad(selectedDate.getDate())}`;
-    getAvailableHours(dateStr, selectedService)
-      .then(hours => setAvailableHours(Array.isArray(hours) ? hours : []))
-      .catch(() => setAvailableHours([]));
-  }, [selectedDate, selectedService]);
+
+    let active = true;
+    const date = dateInputValue(selectedDate);
+    getAvailableHours(date, selectedService)
+      .then((hours) => {
+        if (active) setAvailableHours(Array.isArray(hours) ? hours : []);
+      })
+      .catch(() => {
+        if (active) setAvailableHours([]);
+      });
+
+    return () => { active = false; };
+  }, [selectedDate, selectedService, newBookingOpen]);
 
   useEffect(() => {
-    if (!rescheduleDate || !editDialogOpen) {
+    if (!rescheduleDate || !editDialogOpen || !rescheduleService) {
       setRescheduleAvailableHours([]);
       return;
     }
+
+    let active = true;
     setLoadingRescheduleHours(true);
-    const pad = (n: number) => n.toString().padStart(2, '0');
-    const dateStr = `${rescheduleDate.getFullYear()}-${pad(rescheduleDate.getMonth() + 1)}-${pad(rescheduleDate.getDate())}`;
-    getAvailableHours(dateStr, rescheduleService)
-      .then(hours => setRescheduleAvailableHours(Array.isArray(hours) ? hours : []))
-      .catch(() => setRescheduleAvailableHours([]))
-      .finally(() => setLoadingRescheduleHours(false));
+    getAvailableHours(dateInputValue(rescheduleDate), rescheduleService)
+      .then((hours) => {
+        if (active) setRescheduleAvailableHours(Array.isArray(hours) ? hours : []);
+      })
+      .catch(() => {
+        if (active) setRescheduleAvailableHours([]);
+      })
+      .finally(() => {
+        if (active) setLoadingRescheduleHours(false);
+      });
+
+    return () => { active = false; };
   }, [rescheduleDate, rescheduleService, editDialogOpen]);
 
   const handleSyncCalendar = async () => {
     setSyncing(true);
     try {
       await api.post(`${API_BASE}/api/calendar/sync`);
-      toast({ title: 'Calendar Synced', description: 'All confirmed bookings have been synced to Google Calendar' });
-      fetchBookings();
+      toast({ title: 'Calendar synced', description: 'Confirmed bookings have been synced to Google Calendar.' });
+      await fetchBookings();
     } catch {
-      toast({ title: 'Sync Failed', description: 'Failed to sync calendar. Check your Google Calendar setup.', variant: 'destructive' });
+      toast({ title: 'Calendar sync failed', description: 'Check the Google Calendar connection and try again.', variant: 'destructive' });
     } finally {
       setSyncing(false);
     }
@@ -313,10 +362,10 @@ export default function Bookings() {
     setGeneratingInvoice(bookingId);
     try {
       const invoice = await invoicesApi.generateInvoice(bookingId);
-      setInvoices(prev => ({ ...prev, [bookingId]: invoice }));
-      toast({ title: 'Invoice Generated', description: `Invoice ${invoice.invoiceNumber} created successfully` });
+      setInvoices((current) => ({ ...current, [bookingId]: invoice }));
+      toast({ title: 'Invoice generated', description: `Invoice ${invoice.invoiceNumber} is ready.` });
     } catch {
-      toast({ title: 'Error', description: 'Failed to generate invoice', variant: 'destructive' });
+      toast({ title: 'Invoice could not be generated', description: 'Please try again.', variant: 'destructive' });
     } finally {
       setGeneratingInvoice(null);
     }
@@ -325,148 +374,144 @@ export default function Bookings() {
   const handleSendInvoice = async (invoiceId: string, customerName: string) => {
     try {
       await invoicesApi.sendInvoice(invoiceId);
-      toast({ title: 'Invoice Sent', description: `Invoice sent to ${customerName} via WhatsApp` });
-      setInvoices(prev => {
-        const key = Object.keys(prev).find(k => prev[k].id === invoiceId) || '';
-        return { ...prev, [key]: { ...prev[key], status: 'sent' as const, sentAt: new Date().toISOString() } };
+      toast({ title: 'Invoice sent', description: `Invoice sent to ${customerName} via WhatsApp.` });
+      setInvoices((current) => {
+        const bookingId = Object.keys(current).find((key) => current[key].id === invoiceId);
+        if (!bookingId || !current[bookingId]) return current;
+        return {
+          ...current,
+          [bookingId]: { ...current[bookingId], status: 'sent' as const, sentAt: new Date().toISOString() },
+        };
       });
     } catch {
-      toast({ title: 'Error', description: 'Failed to send invoice', variant: 'destructive' });
+      toast({ title: 'Invoice could not be sent', description: 'Please try again.', variant: 'destructive' });
     }
   };
 
   const handleCreateBooking = async () => {
     if (!selectedDate || !selectedTime || !selectedService || !user || !selectedPackage) return;
-    if (!recipientName || !recipientPhone || recipientPhone.trim().length < 8) {
-      toast({ title: 'Missing info', description: 'Please provide the customer name and a valid phone number.', variant: 'destructive' });
+    if (!recipientName.trim() || !recipientPhone.trim() || recipientPhone.trim().length < 8) {
+      toast({ title: 'Customer details required', description: 'Enter the customer name and a valid phone number.', variant: 'destructive' });
       return;
     }
 
     setCreating(true);
     try {
-      const dateTime = new Date(selectedDate);
-      const [hours, minutes] = selectedTime.split(':').map(Number);
-      dateTime.setHours(hours, minutes);
-
       await updateBookingDraft(user.id, {
         service: selectedService,
         packageId: selectedPackage,
-        dateTimeIso: dateTime.toISOString(),
-        name: recipientName,
-        recipientName,
-        recipientPhone,
+        dateTimeIso: toDateTime(selectedDate, selectedTime),
+        name: recipientName.trim(),
+        recipientName: recipientName.trim(),
+        recipientPhone: recipientPhone.trim(),
       });
 
       if (paymentMethod === 'pod') {
         const response = await apiFetch(`${API_BASE}/api/bookings/complete-pod/${user.id}`, { method: 'POST' });
         if (!response.ok) throw new Error('Failed to confirm Pay on Delivery booking');
-        setIsDialogOpen(false);
-        fetchBookings();
-        toast({ title: 'Booking Confirmed!', description: 'Your Pay on Delivery booking has been confirmed.' });
-        setCreating(false);
+        setNewBookingOpen(false);
+        await fetchBookings();
+        toast({ title: 'Booking confirmed', description: 'The Pay on Delivery booking has been confirmed.' });
         return;
       }
 
-      const result = await apiFetch(`${API_BASE}/api/bookings/complete-draft/${user.id}`, {
+      const response = await apiFetch(`${API_BASE}/api/bookings/complete-draft/${user.id}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       });
-      const data = await result.json();
-      toast({ title: 'Payment Required', description: data.message || 'Please complete the payment on your phone to confirm the booking.' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.message || 'Failed to initiate payment');
 
-      setIsDialogOpen(false);
-      setTimeout(() => setIsPaymentPending(true), 0);
+      toast({ title: 'Payment required', description: data.message || 'Complete the payment to confirm the booking.' });
+      setNewBookingOpen(false);
+      setIsPaymentPending(true);
 
       const checkoutRequestId = data.checkoutRequestId;
       if (!checkoutRequestId) throw new Error('No checkoutRequestId returned from backend');
 
       const { pollPaymentStatus } = await import('@/api/payments');
-      let pollCount = 0;
-      const maxPolls = 40;
       let status = 'pending';
-      while (pollCount < maxPolls) {
+      for (let pollCount = 0; pollCount < 40; pollCount++) {
         try {
-          const res = await pollPaymentStatus(checkoutRequestId);
-          if (res && typeof res.status !== 'undefined') {
-            status = res.status;
+          const result = await pollPaymentStatus(checkoutRequestId);
+          if (result && typeof result.status !== 'undefined') {
+            status = result.status;
             if (status === 'success' || status === 'confirmed') {
-              toast({ title: 'Booking Confirmed!', description: 'Your payment was received and your booking is now confirmed.' });
-              fetchBookings();
+              toast({ title: 'Booking confirmed', description: 'Payment was received and the booking is confirmed.' });
+              await fetchBookings();
               setIsPaymentPending(false);
               setSelectedDate(new Date());
               setSelectedTime('');
-              setCreating(false);
               return;
             }
           }
         } catch (pollError) {
           console.warn('[pollPaymentStatus] request failed:', pollError);
         }
-        await new Promise(resolve => setTimeout(resolve, 3000));
-        pollCount++;
+        await new Promise((resolve) => window.setTimeout(resolve, 3000));
       }
+
       setIsPaymentPending(false);
       if (status !== 'success' && status !== 'confirmed') {
-        toast({ title: 'Payment Pending', description: `We did not receive payment confirmation in time. Last status: ${status}.` });
+        toast({ title: 'Payment still pending', description: `No confirmation was received before polling stopped. Last status: ${status}.` });
       }
       setSelectedDate(new Date());
       setSelectedTime('');
-    } catch {
+    } catch (error: any) {
       setIsPaymentPending(false);
-      toast({ title: 'Error', description: 'Failed to initiate payment or booking', variant: 'destructive' });
+      toast({ title: 'Booking could not be completed', description: error?.message || 'Please try again.', variant: 'destructive' });
     } finally {
       setCreating(false);
     }
   };
 
-  const filteredBookings = bookings.filter((booking) => {
-    const matchesSearch =
-      booking.customerName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      booking.service.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      booking.customerPhone?.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesStatus = statusFilter === 'all' ? booking.status !== 'cancelled' : booking.status === statusFilter;
-    const matchesPackage = packageFilter === 'all' || booking.service === packageFilter;
-    const matchesDateRange = !dateRange.from || !dateRange.to || (booking.date >= dateRange.from && booking.date <= dateRange.to);
-    return matchesSearch && matchesStatus && matchesPackage && matchesDateRange;
-  });
-
   const fetchBookingDetails = async (booking: Booking) => {
     setLoadingBookingDetails(true);
     setSelectedBookingDetails(booking);
     setFullBookingData(null);
+    setBookingPayments([]);
+    setBookingReminders([]);
+    setBookingFollowups([]);
     setBookingDetailsOpen(true);
+
     try {
       const bookingData: any = await getBooking(booking.id);
       setFullBookingData(bookingData);
 
-      if (bookingData.payments) {
-        setBookingPayments(Array.isArray(bookingData.payments) ? bookingData.payments : []);
+      if (Array.isArray(bookingData.payments)) {
+        setBookingPayments(bookingData.payments);
       } else {
         try {
-          const payments = await api.get(`${API_BASE}/api/payments`, { params: { bookingId: booking.id } });
-          setBookingPayments(Array.isArray(payments.data) ? payments.data : []);
-        } catch { setBookingPayments([]); }
+          const response = await api.get(`${API_BASE}/api/payments`, { params: { bookingId: booking.id } });
+          setBookingPayments(Array.isArray(response.data) ? response.data : []);
+        } catch {
+          setBookingPayments([]);
+        }
       }
 
-      if (bookingData.reminders) {
-        setBookingReminders(Array.isArray(bookingData.reminders) ? bookingData.reminders : []);
+      if (Array.isArray(bookingData.reminders)) {
+        setBookingReminders(bookingData.reminders);
       } else {
         try {
-          const reminders = await remindersApi.getBookingReminders(booking.id);
-          setBookingReminders(Array.isArray(reminders) ? reminders : []);
-        } catch { setBookingReminders([]); }
+          const rows = await remindersApi.getBookingReminders(booking.id);
+          setBookingReminders(Array.isArray(rows) ? rows : []);
+        } catch {
+          setBookingReminders([]);
+        }
       }
 
-      if (bookingData.followups) {
-        setBookingFollowups(Array.isArray(bookingData.followups) ? bookingData.followups : []);
+      if (Array.isArray(bookingData.followups)) {
+        setBookingFollowups(bookingData.followups);
       } else {
         try {
-          const followups = await followupsApi.getBookingFollowups(booking.id);
-          setBookingFollowups(Array.isArray(followups) ? followups : []);
-        } catch { setBookingFollowups([]); }
+          const rows = await followupsApi.getBookingFollowups(booking.id);
+          setBookingFollowups(Array.isArray(rows) ? rows : []);
+        } catch {
+          setBookingFollowups([]);
+        }
       }
     } catch {
-      toast({ title: 'Error', description: 'Failed to load booking details', variant: 'destructive' });
+      toast({ title: 'Could not load booking details', description: 'Please try again.', variant: 'destructive' });
     } finally {
       setLoadingBookingDetails(false);
     }
@@ -474,7 +519,9 @@ export default function Bookings() {
 
   const fetchCustomerHistory = async (booking: Booking) => {
     setLoadingCustomerHistory(true);
+    setCustomerHistory(null);
     setCustomerContextOpen(true);
+
     try {
       const fullData: any = await getBooking(booking.id);
       const customerId = fullData.customerId || fullData.customer?.id;
@@ -485,14 +532,20 @@ export default function Bookings() {
         getCustomer(customerId).catch(() => null),
         getCustomerBookings(customerId).catch((): any => []),
       ]);
-      const customerBookings = Array.isArray(customerBookingsData) ? customerBookingsData : (customerBookingsData?.bookings || []);
+      const customerBookings = Array.isArray(customerBookingsData)
+        ? customerBookingsData
+        : (customerBookingsData?.bookings || []);
 
       let totalSpent = 0;
       try {
-          const paymentsRes = await api.get(`${API_BASE}/api/payments`, { params: { customerId } });
-        const payments = Array.isArray(paymentsRes.data) ? paymentsRes.data : [];
-        totalSpent = payments.filter((p: any) => p.status === 'success').reduce((sum: number, p: any) => sum + (p.amount || 0), 0);
-      } catch (err) { console.error('Failed to fetch payments:', err); }
+        const response = await api.get(`${API_BASE}/api/payments`, { params: { customerId } });
+        const payments = Array.isArray(response.data) ? response.data : [];
+        totalSpent = payments
+          .filter((payment: any) => payment.status === 'success')
+          .reduce((sum: number, payment: any) => sum + (payment.amount || 0), 0);
+      } catch (error) {
+        console.error('Failed to fetch customer payments:', error);
+      }
 
       setCustomerHistory({
         customer: customer || { id: customerId, name: booking.customerName, phone: booking.customerPhone },
@@ -501,7 +554,7 @@ export default function Bookings() {
         totalBookings: customerBookings.length,
       });
     } catch {
-      toast({ title: 'Error', description: 'Failed to load customer history', variant: 'destructive' });
+      toast({ title: 'Customer history unavailable', description: 'Please try again.', variant: 'destructive' });
     } finally {
       setLoadingCustomerHistory(false);
     }
@@ -509,21 +562,22 @@ export default function Bookings() {
 
   const handleRescheduleBooking = async () => {
     if (!editingBooking || !rescheduleDate || !rescheduleTime) {
-      toast({ title: 'Missing information', description: 'Please select a new date and time', variant: 'destructive' });
+      toast({ title: 'Select a date and time', description: 'Both are required to reschedule a booking.', variant: 'destructive' });
       return;
     }
+
     setSavingBooking(true);
     try {
-      const dateTime = new Date(rescheduleDate);
-      const [hours, minutes] = rescheduleTime.split(':').map(Number);
-      dateTime.setHours(hours, minutes);
-      await updateBooking(editingBooking.id, { dateTime: dateTime.toISOString(), service: rescheduleService || editingBooking.service });
-      toast({ title: 'Booking updated', description: 'Booking has been rescheduled successfully' });
+      await updateBooking(editingBooking.id, {
+        dateTime: toDateTime(rescheduleDate, rescheduleTime),
+        service: rescheduleService || editingBooking.service,
+      });
+      toast({ title: 'Booking updated', description: 'The new date and time have been saved.' });
       setEditDialogOpen(false);
       setEditingBooking(null);
-      fetchBookings();
+      await fetchBookings();
     } catch (error: any) {
-      toast({ title: 'Error', description: error.response?.data?.message || 'Failed to reschedule booking', variant: 'destructive' });
+      toast({ title: 'Could not update booking', description: error.response?.data?.message || 'Please try again.', variant: 'destructive' });
     } finally {
       setSavingBooking(false);
     }
@@ -532,24 +586,26 @@ export default function Bookings() {
   const handleSendReminder = async (reminderId: string) => {
     try {
       await remindersApi.sendReminder(reminderId);
-      toast({ title: 'Reminder sent', description: 'Reminder has been sent to the customer' });
+      toast({ title: 'Reminder sent' });
       if (selectedBookingDetails) {
-        setBookingReminders(await remindersApi.getBookingReminders(selectedBookingDetails.id));
+        const rows = await remindersApi.getBookingReminders(selectedBookingDetails.id);
+        setBookingReminders(Array.isArray(rows) ? rows : []);
       }
     } catch {
-      toast({ title: 'Error', description: 'Failed to send reminder', variant: 'destructive' });
+      toast({ title: 'Reminder could not be sent', variant: 'destructive' });
     }
   };
 
   const handleSendFollowup = async (followupId: string) => {
     try {
       await followupsApi.sendFollowup(followupId);
-      toast({ title: 'Followup sent', description: 'Followup has been sent to the customer' });
+      toast({ title: 'Follow-up sent' });
       if (selectedBookingDetails) {
-        setBookingFollowups(await followupsApi.getBookingFollowups(selectedBookingDetails.id));
+        const rows = await followupsApi.getBookingFollowups(selectedBookingDetails.id);
+        setBookingFollowups(Array.isArray(rows) ? rows : []);
       }
     } catch {
-      toast({ title: 'Error', description: 'Failed to send followup', variant: 'destructive' });
+      toast({ title: 'Follow-up could not be sent', variant: 'destructive' });
     }
   };
 
@@ -557,85 +613,61 @@ export default function Bookings() {
     try {
       await api.post(`${API_BASE}/api/bookings/${bookingId}/${action}`);
       toast({ title: action === 'confirm' ? 'Booking confirmed' : 'Booking cancelled' });
-      fetchBookings();
+      await fetchBookings();
     } catch {
-      toast({ title: 'Error', description: `Failed to ${action} booking`, variant: 'destructive' });
+      toast({ title: `Could not ${action} booking`, variant: 'destructive' });
     }
   };
 
-  const getStatusClass = (status: string) => {
-    switch (status) {
-      case 'confirmed': return 'capitalize border-emerald-300 bg-emerald-50 text-emerald-700';
-      case 'provisional': return 'capitalize border-amber-300 bg-amber-50 text-amber-700';
-      case 'cancelled': return 'capitalize border-red-300 bg-red-50 text-red-700';
-      default: return 'capitalize';
-    }
-  };
+  const filteredBookings = useMemo(() => bookings.filter((booking) => {
+    const query = searchTerm.trim().toLowerCase();
+    const matchesSearch = !query
+      || booking.customerName.toLowerCase().includes(query)
+      || booking.service.toLowerCase().includes(query)
+      || booking.customerPhone?.toLowerCase().includes(query);
+    const matchesStatus = statusFilter === 'all'
+      ? booking.status !== 'cancelled'
+      : booking.status === statusFilter;
+    const matchesPackage = packageFilter === 'all' || booking.service === packageFilter;
+    return matchesSearch && matchesStatus && matchesPackage;
+  }), [bookings, searchTerm, statusFilter, packageFilter]);
 
-  const allBookingsForSelectedDate = selectedDate
-    ? bookings
-        .filter(b => b.date.toDateString() === selectedDate.toDateString())
-        .sort((a, b) => Number(a.status === 'cancelled') - Number(b.status === 'cancelled'))
-    : [];
-  const bookingsForSelectedDate = allBookingsForSelectedDate.filter(b => b.status !== 'cancelled');
-  const cancelledForSelectedDate = allBookingsForSelectedDate.length - bookingsForSelectedDate.length;
+  const bookingDateKeys = useMemo(() => {
+    const active = new Set<string>();
+    const cancelled = new Set<string>();
+    bookings.forEach((booking) => {
+      (booking.status === 'cancelled' ? cancelled : active).add(dateKey(booking.date));
+    });
+    return { active, cancelled };
+  }, [bookings]);
 
-  const timelineStartHour = 8;
-  const timelineEndHour = 20;
-  const timelineMinutes = (timelineEndHour - timelineStartHour) * 60;
-  const timelineRows = Array.from({ length: timelineEndHour - timelineStartHour + 1 }, (_, index) => timelineStartHour + index);
-  const getBookingDuration = (booking: Booking) => booking.durationMinutes || 120;
-  const selectedDayBookedMinutes = bookingsForSelectedDate.reduce((total, booking) => total + getBookingDuration(booking), 0);
-  const selectedDayConfirmed = bookingsForSelectedDate.filter((booking) => booking.status === 'confirmed').length;
-  const selectedDayOpenMinutes = Math.max(0, timelineMinutes - selectedDayBookedMinutes);
+  const selectedDateBookings = useMemo(() => {
+    if (!selectedDate) return [];
+    return bookings
+      .filter((booking) => dateKey(booking.date) === dateKey(selectedDate))
+      .sort((a, b) => a.date.getTime() - b.date.getTime());
+  }, [bookings, selectedDate]);
 
-  const getTimelinePosition = (booking: Booking) => {
-    const startMinutes = booking.date.getHours() * 60 + booking.date.getMinutes();
-    const topMinutes = Math.max(0, Math.min(timelineMinutes, startMinutes - timelineStartHour * 60));
-    const visibleDuration = Math.max(30, Math.min(getBookingDuration(booking), timelineMinutes - topMinutes));
-    return {
-      top: `${(topMinutes / timelineMinutes) * 100}%`,
-      height: `${(visibleDuration / timelineMinutes) * 100}%`,
-    };
-  };
+  const activeSelectedDateBookings = selectedDateBookings.filter((booking) => booking.status !== 'cancelled');
+  const selectedDayConfirmed = activeSelectedDateBookings.filter((booking) => booking.status === 'confirmed').length;
 
   const handleCalendarDateSelect = (date: Date | undefined) => {
     setSelectedDate(date);
-    if (!date) return;
-
-    const dateKey = date.toISOString().slice(0, 10);
-    setTimelineKey(dateKey);
-    window.setTimeout(() => timelineRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 80);
+    if (date) {
+      window.setTimeout(() => scheduleRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 50);
+    }
   };
 
-  const { bookingDateKeys, cancelledDateKeys } = useMemo(() => {
-    const keyOf = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-    const active = new Set<string>();
-    const cancelled = new Set<string>();
-    bookings.forEach((b) => (b.status === 'cancelled' ? cancelled : active).add(keyOf(b.date)));
-    return { bookingDateKeys: active, cancelledDateKeys: cancelled };
-  }, [bookings]);
-
   const renderBookingDayContent = ({ date }: DayContentProps) => {
-    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-    const hasBookings = bookingDateKeys.has(key);
-    const onlyCancelled = !hasBookings && cancelledDateKeys.has(key);
+    const key = dateKey(date);
+    const hasActive = bookingDateKeys.active.has(key);
+    const onlyCancelled = !hasActive && bookingDateKeys.cancelled.has(key);
 
     return (
-      <div className="relative h-full w-full flex items-center justify-center">
+      <div className="relative flex h-full w-full items-center justify-center">
         <span>{date.getDate()}</span>
-        {hasBookings && (
-          <span
-            className="absolute bottom-1 h-1.5 w-1.5 rounded-full bg-primary"
-            aria-hidden="true"
-          />
-        )}
-        {onlyCancelled && (
-          <span
-            className="absolute bottom-1 h-1.5 w-1.5 rounded-full border border-red-500"
-            title="Cancelled sessions only"
-          />
-        )}
+        {hasActive && <span className="absolute bottom-1 h-1 w-1 rounded-full bg-primary" aria-hidden="true" />}
+        {onlyCancelled && <span className="absolute bottom-1 h-1 w-1 rounded-full border border-red-500" aria-label="Cancelled bookings only" />}
       </div>
     );
   };
@@ -645,41 +677,38 @@ export default function Bookings() {
       header: 'Customer',
       accessor: 'customerName' as keyof Booking,
       cell: (row: Booking) => (
-        <div className="flex flex-col">
-          <span className="font-medium text-foreground">{row.customerName}</span>
-          <span className="text-sm text-muted-foreground">{row.customerPhone}</span>
+        <div className="min-w-[150px]">
+          <p className="font-medium leading-5 text-foreground">{row.customerName}</p>
+          {row.customerPhone && <p className="text-xs leading-4 text-muted-foreground">{row.customerPhone}</p>}
         </div>
       ),
     },
     {
-      header: 'Service',
+      header: 'Package',
       accessor: 'service' as keyof Booking,
       cell: (row: Booking) => {
         const color = getPackageColor(row.service);
         return (
-          <span
-            className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium"
-            style={{ backgroundColor: `${color}20`, color, border: `1px solid ${color}40` }}
-          >
+          <span className="inline-flex whitespace-nowrap rounded border px-2 py-1 text-xs font-medium" style={{ backgroundColor: `${color}12`, color, borderColor: `${color}35` }}>
             {row.service}
           </span>
         );
       },
     },
     {
-      header: 'Date & Time',
+      header: 'Date & time',
       accessor: (row: Booking) => row.date.toLocaleDateString(),
       cell: (row: Booking) => (
-        <div className="flex flex-col">
-          <span className="text-foreground">{row.date.toLocaleDateString()}</span>
-          <span className="text-sm text-muted-foreground">{row.time}</span>
+        <div className="whitespace-nowrap">
+          <p className="text-sm text-foreground">{formatDate(row.date)}</p>
+          <p className="text-xs text-muted-foreground">{row.time}</p>
         </div>
       ),
     },
     {
       header: 'Status',
       accessor: (row: Booking) => (
-        <Badge variant="outline" className={getStatusClass(row.status)}>{row.status}</Badge>
+        <Badge variant="outline" className={`capitalize ${getStatusClass(row.status)}`}>{row.status}</Badge>
       ),
     },
     {
@@ -690,68 +719,68 @@ export default function Bookings() {
           return (
             <Button
               size="sm"
-              variant="outline"
-              onClick={(e) => { e.stopPropagation(); handleGenerateInvoice(row.id); }}
+              variant="ghost"
               disabled={generatingInvoice === row.id || row.status !== 'confirmed'}
-              className="h-8"
+              onClick={(event) => { event.stopPropagation(); void handleGenerateInvoice(row.id); }}
+              className="h-7 px-2 text-xs"
             >
-              <FileText className="h-3.5 w-3.5 mr-1.5" />
-              {generatingInvoice === row.id ? 'Generating...' : 'Generate'}
+              <FileText className="mr-1.5 h-3.5 w-3.5" />
+              {generatingInvoice === row.id ? 'Creating…' : 'Generate'}
             </Button>
           );
         }
         return (
-          <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-            <Button size="sm" variant="outline" className="h-8 w-8 p-0" onClick={() => window.open(invoicesApi.downloadInvoice(invoice.id), '_blank')} title="Download PDF">
+          <div className="flex items-center gap-1" onClick={(event) => event.stopPropagation()}>
+            <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => window.open(invoicesApi.downloadInvoice(invoice.id), '_blank')} title="Download invoice">
               <Download className="h-3.5 w-3.5" />
             </Button>
-            <Button size="sm" variant="outline" className="h-8" onClick={() => handleSendInvoice(invoice.id, row.customerName)} disabled={invoice.status === 'sent'}>
-              <Send className="h-3.5 w-3.5 mr-1.5" />
-              {invoice.status === 'sent' ? 'Sent' : 'Send'}
+            <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => void handleSendInvoice(invoice.id, row.customerName)} disabled={invoice.status === 'sent'}>
+              <Send className="mr-1 h-3.5 w-3.5" />{invoice.status === 'sent' ? 'Sent' : 'Send'}
             </Button>
           </div>
         );
       },
     },
     {
-      header: 'Actions',
+      header: '',
       accessor: (row: Booking) => (
         <Popover>
-          <PopoverTrigger asChild onClick={(e) => e.stopPropagation()}>
-            <Button variant="ghost" size="sm" className="h-8 w-8 p-0"><MoreVertical className="h-4 w-4" /></Button>
+          <PopoverTrigger asChild>
+            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={(event) => event.stopPropagation()} aria-label={`Actions for ${row.customerName}`}>
+              <MoreHorizontal className="h-4 w-4" />
+            </Button>
           </PopoverTrigger>
-          <PopoverContent className="w-56" onClick={(e) => e.stopPropagation()}>
-            <div className="space-y-1">
-              <Button variant="ghost" className="w-full justify-start" onClick={() => fetchBookingDetails(row)}>
-                <Info className="h-4 w-4 mr-2" /> View Details
+          <PopoverContent className="w-48 p-1" align="end" onClick={(event) => event.stopPropagation()}>
+            <Button variant="ghost" size="sm" className="h-8 w-full justify-start text-xs" onClick={() => void fetchBookingDetails(row)}>
+              <Info className="mr-2 h-3.5 w-3.5" />Booking details
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 w-full justify-start text-xs"
+              onClick={() => {
+                setEditingBooking(row);
+                setRescheduleDate(row.date);
+                setRescheduleTime(row.timeValue);
+                setRescheduleService(row.service);
+                setEditDialogOpen(true);
+              }}
+            >
+              <Edit className="mr-2 h-3.5 w-3.5" />Edit / reschedule
+            </Button>
+            <Button variant="ghost" size="sm" className="h-8 w-full justify-start text-xs" onClick={() => void fetchCustomerHistory(row)}>
+              <History className="mr-2 h-3.5 w-3.5" />Customer history
+            </Button>
+            {row.status === 'provisional' && (
+              <Button variant="ghost" size="sm" className="h-8 w-full justify-start text-xs" onClick={() => void handleQuickAction(row.id, 'confirm')}>
+                <Check className="mr-2 h-3.5 w-3.5" />Confirm booking
               </Button>
-              <Button
-                variant="ghost"
-                className="w-full justify-start"
-                onClick={() => {
-                  setEditingBooking(row);
-                  setRescheduleDate(row.date);
-                  setRescheduleTime(row.time);
-                  setRescheduleService(row.service);
-                  setEditDialogOpen(true);
-                }}
-              >
-                <Edit className="h-4 w-4 mr-2" /> Edit/Reschedule
+            )}
+            {row.status !== 'cancelled' && (
+              <Button variant="ghost" size="sm" className="h-8 w-full justify-start text-xs text-destructive hover:text-destructive" onClick={() => void handleQuickAction(row.id, 'cancel')}>
+                <X className="mr-2 h-3.5 w-3.5" />Cancel booking
               </Button>
-              <Button variant="ghost" className="w-full justify-start" onClick={() => fetchCustomerHistory(row)}>
-                <History className="h-4 w-4 mr-2" /> Customer History
-              </Button>
-              {row.status === 'provisional' && (
-                <Button variant="ghost" className="w-full justify-start" onClick={() => handleQuickAction(row.id, 'confirm')}>
-                  <Check className="h-4 w-4 mr-2" /> Confirm
-                </Button>
-              )}
-              {row.status !== 'cancelled' && (
-                <Button variant="ghost" className="w-full justify-start text-destructive hover:text-destructive" onClick={() => handleQuickAction(row.id, 'cancel')}>
-                  <X className="h-4 w-4 mr-2" /> Cancel
-                </Button>
-              )}
-            </div>
+            )}
           </PopoverContent>
         </Popover>
       ),
@@ -760,463 +789,366 @@ export default function Bookings() {
 
   if (loading) {
     return (
-      <div className="flex h-screen items-center justify-center">
-        <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-primary" />
+      <div className="flex min-h-[50vh] items-center justify-center">
+        <div className="h-7 w-7 animate-spin rounded-full border-2 border-muted border-t-primary" />
       </div>
     );
   }
 
   return (
-    <div className="max-w-7xl mx-auto space-y-6">
+    <div className="mx-auto max-w-[1440px] space-y-4 pb-8">
       <PageHeader
         title="Bookings"
-        description="Manage appointments and schedules"
+        description="Appointments, payments and studio schedule"
         actions={
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => { setShowCalendarPanel(v => !v); setShowAllBookings(false); }}>
-              <CalendarIcon className="h-4 w-4 mr-2" />
-              {showCalendarPanel ? 'Hide Calendar' : 'Show Calendar'}
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" size="sm" className="h-8" onClick={() => setShowSchedule((value) => !value)}>
+              <CalendarDays className="mr-1.5 h-3.5 w-3.5" />
+              {showSchedule ? 'Hide schedule' : 'Schedule'}
             </Button>
-            <Button variant="outline" size="sm" onClick={handleSyncCalendar} disabled={syncing}>
-              <RefreshCw className={`h-4 w-4 mr-2 ${syncing ? 'animate-spin' : ''}`} />
-              {syncing ? 'Syncing...' : 'Sync Calendar'}
+            <Button variant="outline" size="sm" className="h-8" onClick={() => void handleSyncCalendar()} disabled={syncing}>
+              <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${syncing ? 'animate-spin' : ''}`} />
+              {syncing ? 'Syncing…' : 'Sync calendar'}
             </Button>
-            <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-              <DialogTrigger asChild>
-                <Button size="sm"><Plus className="h-4 w-4 mr-2" /> New Booking</Button>
-              </DialogTrigger>
-            </Dialog>
+            <Button size="sm" className="h-8" onClick={() => setNewBookingOpen(true)}>
+              <Plus className="mr-1.5 h-3.5 w-3.5" />New booking
+            </Button>
           </div>
         }
       />
 
-      <Card className="border-border/50">
-        <CardContent className="p-3">
-          <div className="flex flex-wrap items-center gap-4 text-sm">
-            <span><span className="text-muted-foreground">Total:</span> <span className="font-semibold">{statistics.total}</span></span>
-            <span><span className="text-muted-foreground">Confirmed:</span> <span className="font-semibold">{statistics.confirmed}</span></span>
-            <span><span className="text-muted-foreground">Provisional:</span> <span className="font-semibold">{statistics.provisional}</span></span>
-            <span><span className="text-muted-foreground">Revenue:</span> <span className="font-semibold">KSh {statistics.revenue.toLocaleString()}</span></span>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Filters */}
-      <Card className="border-border/50">
-        <CardContent className="p-4">
-          <div className="flex flex-col sm:flex-row gap-3">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input placeholder="Search by name, service, or phone..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="pl-9" />
-            </div>
-            <Select value={statusFilter} onValueChange={setStatusFilter}>
-              <SelectTrigger className="w-full sm:w-[160px]"><SelectValue placeholder="Status" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Status</SelectItem>
-                <SelectItem value="provisional">Provisional</SelectItem>
-                <SelectItem value="confirmed">Confirmed</SelectItem>
-                <SelectItem value="cancelled">Cancelled</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select value={packageFilter} onValueChange={setPackageFilter}>
-              <SelectTrigger className="w-full sm:w-[180px]"><SelectValue placeholder="All packages" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Packages</SelectItem>
-                {packages.map((pkg) => <SelectItem key={pkg.id} value={pkg.name}>{pkg.name}</SelectItem>)}
-              </SelectContent>
-            </Select>
-            {(dateRange.from || dateRange.to || statusFilter !== 'all' || packageFilter !== 'all' || searchTerm) && (
-              <Button variant="ghost" size="sm" onClick={() => { setDateRange({}); setStatusFilter('all'); setPackageFilter('all'); setSearchTerm(''); }}>
-                <X className="h-4 w-4 mr-1" /> Clear
-              </Button>
-            )}
-          </div>
-        </CardContent>
-      </Card>
-
-      <div className="space-y-4">
-        {showCalendarPanel && (
-          <Card className="border-border/50">
-            <CardHeader className="flex flex-row items-center justify-between gap-3 pb-3">
-              <div>
-                <CardTitle className="text-base font-medium">Studio schedule</CardTitle>
-                <p className="mt-1 text-xs text-muted-foreground">Select a day to review the session flow and available capacity.</p>
-              </div>
-              <div className="flex items-center gap-2">
-                <Button variant="ghost" size="sm" onClick={() => handleCalendarDateSelect(new Date())}>Today</Button>
-                <Button variant="outline" size="sm" onClick={() => setShowAllBookings(true)}>
-                  <List className="mr-2 h-4 w-4" />
-                  All bookings
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent className="flex flex-col items-stretch gap-4">
-              <Calendar
-                mode="single"
-                selected={selectedDate}
-                onSelect={handleCalendarDateSelect}
-                className="w-full rounded-md border"
-                classNames={{
-                  months: 'w-full',
-                  month: 'w-full space-y-5',
-                  head_row: 'flex w-full',
-                  head_cell: 'flex-1 w-auto text-muted-foreground rounded-md font-normal text-[0.9rem]',
-                  row: 'flex w-full mt-2',
-                  cell: 'flex-1 w-auto h-12 text-center text-sm p-0 relative',
-                  day: 'h-12 w-full p-0 font-normal aria-selected:opacity-100 text-sm',
-                  table: 'w-full border-collapse space-y-1',
-                }}
-                dayContent={renderBookingDayContent}
-              />
-              <div className="w-full">
-
-                <div ref={timelineRef} key={timelineKey} className="scroll-mt-6 pt-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                  <div className="mb-3 flex items-end justify-between border-b border-border/60 pb-3">
-                    <div>
-                      <p className="text-xs font-medium uppercase tracking-wide text-primary">Daily schedule</p>
-                      <p className="text-lg font-semibold text-foreground">{selectedDate?.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}</p>
-                    </div>
-                    <span className="text-xs text-muted-foreground">
-                      {bookingsForSelectedDate.length} active session{bookingsForSelectedDate.length === 1 ? '' : 's'}
-                      {cancelledForSelectedDate > 0 && <span className="text-red-600"> · {cancelledForSelectedDate} cancelled</span>}
-                      {' '}· {timelineStartHour}:00 - {timelineEndHour}:00
-                    </span>
-                  </div>
-                  <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
-                    <div className="rounded-md border border-border/60 bg-background px-3 py-2">
-                      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Sessions</p>
-                      <p className="mt-1 text-lg font-semibold text-foreground">{bookingsForSelectedDate.length}</p>
-                    </div>
-                    <div className="rounded-md border border-border/60 bg-background px-3 py-2">
-                      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Confirmed</p>
-                      <p className="mt-1 text-lg font-semibold text-foreground">{selectedDayConfirmed}</p>
-                    </div>
-                    <div className="rounded-md border border-border/60 bg-background px-3 py-2">
-                      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Booked time</p>
-                      <p className="mt-1 text-lg font-semibold text-foreground">{Math.floor(selectedDayBookedMinutes / 60)}h {selectedDayBookedMinutes % 60 ? `${selectedDayBookedMinutes % 60}m` : ''}</p>
-                    </div>
-                    <div className="rounded-md border border-border/60 bg-background px-3 py-2">
-                      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Open capacity</p>
-                      <p className="mt-1 text-lg font-semibold text-foreground">{Math.floor(selectedDayOpenMinutes / 60)}h {selectedDayOpenMinutes % 60 ? `${selectedDayOpenMinutes % 60}m` : ''}</p>
-                    </div>
-                  </div>
-                  <div className="relative h-[480px] overflow-y-auto rounded-md border border-border/60 bg-muted/20">
-                    <div className="relative min-h-[480px]" style={{ height: `${(timelineMinutes / 30) * 36}px` }}>
-                      {timelineRows.map((hour) => (
-                        <div
-                          key={hour}
-                          className="absolute left-0 right-0 border-t border-border/50"
-                          style={{ top: `${(((hour - timelineStartHour) * 60) / timelineMinutes) * 100}%` }}
-                        >
-                          <span className="absolute -top-2 left-2 bg-muted/20 px-1 text-[10px] text-muted-foreground">
-                            {new Date(2000, 0, 1, hour).toLocaleTimeString([], { hour: 'numeric' })}
-                          </span>
-                        </div>
-                      ))}
-                      {allBookingsForSelectedDate.map((booking) => {
-                        const position = getTimelinePosition(booking);
-                        const isCancelled = booking.status === 'cancelled';
-                        return (
-                          <button
-                            type="button"
-                            key={`timeline-${booking.id}`}
-                            className={isCancelled
-                              ? 'absolute left-16 right-3 overflow-hidden rounded-md border border-dashed border-red-300 bg-red-50/70 px-2 py-1 text-left opacity-70 transition-opacity hover:opacity-100'
-                              : 'absolute left-16 right-3 overflow-hidden rounded-md border bg-primary/10 px-2 py-1 text-left shadow-sm transition-all hover:-translate-y-px hover:bg-primary/20 hover:shadow-md'}
-                            style={{ ...position, borderLeftColor: isCancelled ? '#ef4444' : getPackageColor(booking.service), borderLeftWidth: '4px' }}
-                            onClick={() => fetchBookingDetails(booking)}
-                            title={`Open ${booking.service} booking (${booking.status})`}
-                          >
-                            <span className="flex items-center gap-2">
-                              <span className={`truncate text-xs font-semibold ${isCancelled ? 'text-red-700 line-through' : 'text-foreground'}`}>{booking.time} · {booking.service}</span>
-                              <span className={`shrink-0 rounded border px-1 text-[9px] font-semibold uppercase tracking-wide ${getStatusClass(booking.status)}`}>{booking.status}</span>
-                            </span>
-                            <span className={`block truncate text-[11px] text-muted-foreground ${isCancelled ? 'line-through' : ''}`}>
-                              {booking.recipientName && booking.recipientName !== booking.customerName ? `${booking.recipientName} · ` : ''}{booking.customerName}
-                            </span>
-                            <span className="block text-[10px] text-muted-foreground">{getBookingDuration(booking)} min</span>
-                          </button>
-                        );
-                      })}
-                      {allBookingsForSelectedDate.length === 0 && (
-                        <div className="absolute inset-0 flex items-center justify-center pl-16 text-center">
-                          <div>
-                            <p className="text-sm font-medium text-foreground">No sessions scheduled</p>
-                            <p className="mt-1 text-xs text-muted-foreground">This day is open for new bookings.</p>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Keep the full table available without competing with the calendar. */}
-        {(!showCalendarPanel || showAllBookings) ? (
-          <Card className="border-border/50 overflow-hidden">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base font-medium flex items-center justify-between">
-                All Bookings
-                <span className="text-sm font-normal text-muted-foreground">{filteredBookings.length} found</span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-0">
-              <div className="overflow-x-auto">
-                <DataTable data={filteredBookings} columns={columns} onRowClick={(booking) => fetchBookingDetails(booking)} />
-              </div>
-            </CardContent>
-          </Card>
-        ) : (
-          <Button
-            variant="outline"
-            className="w-full justify-between bg-background"
-            onClick={() => setShowAllBookings(true)}
-          >
-            <span>Show All Bookings</span>
-            <span className="text-xs text-muted-foreground">{filteredBookings.length} found</span>
-          </Button>
-        )}
+      {/* Compact operational summary */}
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 border-y border-border/70 py-2.5 text-sm">
+        <div><span className="text-muted-foreground">Bookings</span><span className="ml-2 font-semibold tabular-nums">{statistics.total}</span></div>
+        <div><span className="text-muted-foreground">Confirmed</span><span className="ml-2 font-semibold tabular-nums">{statistics.confirmed}</span></div>
+        <div><span className="text-muted-foreground">Provisional</span><span className="ml-2 font-semibold tabular-nums">{statistics.provisional}</span></div>
+        <div><span className="text-muted-foreground">Cancelled</span><span className="ml-2 font-semibold tabular-nums">{statistics.cancelled}</span></div>
+        <div className="ml-auto"><span className="text-muted-foreground">Revenue</span><span className="ml-2 font-semibold tabular-nums">KSh {statistics.revenue.toLocaleString()}</span></div>
       </div>
 
-      {/* Payment Pending Modal */}
-      <Dialog open={isPaymentPending} onOpenChange={setIsPaymentPending}>
-        <DialogContent className="sm:max-w-md">
-          <div className="flex flex-col items-center justify-center gap-4 py-8">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary" />
-            <h3 className="text-lg font-semibold text-foreground">Waiting for Payment</h3>
-            <p className="text-center text-muted-foreground text-sm max-w-xs">Please complete the payment on your phone to confirm the booking.</p>
-          </div>
-        </DialogContent>
-      </Dialog>
+      {/* Search and filters stay on one compact toolbar where possible. */}
+      <div className="flex flex-col gap-2 md:flex-row md:items-center">
+        <div className="relative min-w-[220px] flex-1">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            aria-label="Search bookings"
+            placeholder="Search customer, phone or package"
+            value={searchTerm}
+            onChange={(event) => setSearchTerm(event.target.value)}
+            className="h-9 pl-8 text-sm"
+          />
+        </div>
+        <Select value={statusFilter} onValueChange={setStatusFilter}>
+          <SelectTrigger className="h-9 w-full text-sm md:w-[145px]"><SelectValue placeholder="Status" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Active bookings</SelectItem>
+            <SelectItem value="provisional">Provisional</SelectItem>
+            <SelectItem value="confirmed">Confirmed</SelectItem>
+            <SelectItem value="cancelled">Cancelled</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select value={packageFilter} onValueChange={setPackageFilter}>
+          <SelectTrigger className="h-9 w-full text-sm md:w-[180px]"><SelectValue placeholder="All packages" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All packages</SelectItem>
+            {packages.map((pkg) => <SelectItem key={pkg.id} value={pkg.name}>{pkg.name}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        {(searchTerm || statusFilter !== 'all' || packageFilter !== 'all') && (
+          <Button variant="ghost" size="sm" className="h-9 px-2 text-xs" onClick={() => { setSearchTerm(''); setStatusFilter('all'); setPackageFilter('all'); }}>
+            <X className="mr-1 h-3.5 w-3.5" />Clear
+          </Button>
+        )}
+        <span className="shrink-0 text-xs text-muted-foreground md:ml-1">{filteredBookings.length} results</span>
+      </div>
 
-      {/* Create Booking Dialog */}
-      <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-        <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader><DialogTitle>Create New Booking</DialogTitle></DialogHeader>
-          <div className="grid gap-5 py-2">
-            <div className="grid gap-2">
-              <Label htmlFor="recipientName">Customer Name</Label>
-              <Input id="recipientName" value={recipientName} onChange={e => setRecipientName(e.target.value)} placeholder="Enter customer name" />
+      {/* Schedule is available on demand and uses a compact calendar + agenda. */}
+      {showSchedule && (
+        <section className="grid gap-3 rounded-md border border-border/70 p-3 lg:grid-cols-[270px_minmax(0,1fr)]">
+          <div>
+            <div className="mb-2 flex items-center justify-between">
+              <p className="text-sm font-medium">Studio schedule</p>
+              <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => handleCalendarDateSelect(new Date())}>Today</Button>
             </div>
-            <div className="grid gap-2">
-              <Label htmlFor="recipientPhone">Phone Number</Label>
-              <Input id="recipientPhone" value={recipientPhone} onChange={e => setRecipientPhone(e.target.value)} placeholder="Enter phone number" />
+            <Calendar
+              mode="single"
+              selected={selectedDate}
+              onSelect={handleCalendarDateSelect}
+              className="w-full rounded-md border-0 p-1"
+              classNames={{
+                months: 'w-full',
+                month: 'w-full space-y-2',
+                caption: 'flex justify-center pt-1 relative items-center text-sm',
+                head_row: 'flex w-full',
+                head_cell: 'flex-1 text-muted-foreground rounded-md font-normal text-[11px]',
+                row: 'flex w-full mt-1',
+                cell: 'flex-1 h-8 text-center text-xs p-0 relative',
+                day: 'h-8 w-full p-0 font-normal text-xs',
+                table: 'w-full border-collapse space-y-1',
+              }}
+              dayContent={renderBookingDayContent}
+            />
+            <div className="mt-2 flex flex-wrap gap-3 border-t border-border/60 pt-2 text-[11px] text-muted-foreground">
+              <span className="inline-flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-primary" />Active booking</span>
+              <span className="inline-flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full border border-red-500" />Cancelled only</span>
             </div>
-            <div className="grid gap-2">
-              <Label>Package</Label>
-              <Select value={selectedPackage} onValueChange={val => { setSelectedPackage(val); const pkg = getPackageById(val); if (pkg) setSelectedService(pkg.name); }}>
-                <SelectTrigger><SelectValue placeholder="Select a package" /></SelectTrigger>
-                <SelectContent>
-                  {packages.map((pkg) => (
-                    <SelectItem key={pkg.id} value={pkg.id}>
-                      <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: getPackageColor(pkg.name) }} />
-                        <span>{pkg.name}</span>
-                      </div>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid md:grid-cols-2 gap-4">
-              <div className="grid gap-2">
-                <Label>Date</Label>
-                <Calendar mode="single" selected={selectedDate} onSelect={setSelectedDate} className="rounded-md border" />
+          </div>
+
+          <div ref={scheduleRef} className="min-w-0 border-t border-border/60 pt-3 lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-sm font-medium">{selectedDate ? formatDate(selectedDate, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }) : 'Select a date'}</p>
+                <p className="text-xs text-muted-foreground">{activeSelectedDateBookings.length} active · {selectedDayConfirmed} confirmed</p>
               </div>
-              <div className="grid gap-2">
-                <Label>Time</Label>
-                <div className="border rounded-md p-1 h-[280px] overflow-y-auto">
-                  {availableHours.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center h-full text-muted-foreground p-4 text-center">
-                      <Clock className="h-6 w-6 mb-2 opacity-30" />
-                      <p className="text-sm">Select a date and package first.</p>
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-2 gap-2 p-2">
-                      {availableHours.map(({ time, available }) => {
-                        const d = new Date(time);
-                        const timeStr = d.toTimeString().split(' ')[0];
-                        return (
-                          <Button
-                            key={time}
-                            variant={selectedTime === timeStr ? 'default' : 'outline'}
-                            onClick={() => setSelectedTime(timeStr)}
-                            className={!available ? 'opacity-70' : ''}
-                            size="sm"
-                            title={!available ? 'This time slot may be occupied' : ''}
-                          >
-                            {d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                            {!available && <span className="ml-1 text-xs">!</span>}
-                          </Button>
-                        );
-                      })}
-                    </div>
-                  )}
+              <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => { setNewBookingOpen(true); if (!selectedDate) setSelectedDate(new Date()); }}>
+                <Plus className="mr-1 h-3.5 w-3.5" />Book this day
+              </Button>
+            </div>
+
+            {selectedDateBookings.length === 0 ? (
+              <div className="flex min-h-[110px] items-center justify-center rounded border border-dashed border-border px-4 text-center">
+                <div>
+                  <p className="text-sm text-foreground">No bookings on this date</p>
+                  <p className="mt-1 text-xs text-muted-foreground">Choose another day or create a booking.</p>
                 </div>
               </div>
+            ) : (
+              <div className="divide-y divide-border/60 rounded-md border border-border/60">
+                {selectedDateBookings.map((booking) => (
+                  <button
+                    key={booking.id}
+                    type="button"
+                    onClick={() => void fetchBookingDetails(booking)}
+                    className="flex w-full items-center gap-3 px-3 py-2 text-left transition-colors hover:bg-muted/40"
+                  >
+                    <span className="w-[68px] shrink-0 text-xs font-medium tabular-nums text-foreground">{booking.time}</span>
+                    <span className="h-7 w-1 shrink-0 rounded-full" style={{ backgroundColor: getPackageColor(booking.service) }} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-medium">{booking.recipientName && booking.recipientName !== booking.customerName ? booking.recipientName : booking.customerName}</span>
+                      <span className="block truncate text-xs text-muted-foreground">{booking.service} · {getBookingDuration(booking)} min</span>
+                    </span>
+                    <Badge variant="outline" className={`shrink-0 text-[10px] capitalize ${getStatusClass(booking.status)}`}>{booking.status}</Badge>
+                    <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* The bookings table is the main working surface. */}
+      <section className="overflow-hidden rounded-md border border-border/70">
+        <div className="flex items-center justify-between border-b border-border/70 px-3 py-2.5">
+          <div>
+            <h2 className="text-sm font-semibold">All bookings</h2>
+            <p className="text-xs text-muted-foreground">Select a row to view its details.</p>
+          </div>
+          <span className="text-xs tabular-nums text-muted-foreground">{filteredBookings.length} shown</span>
+        </div>
+        <div className="overflow-x-auto">
+          <DataTable data={filteredBookings} columns={columns} onRowClick={(booking) => void fetchBookingDetails(booking)} />
+        </div>
+      </section>
+
+      {/* Create booking */}
+      <Dialog open={newBookingOpen} onOpenChange={setNewBookingOpen}>
+        <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
+          <DialogHeader><DialogTitle className="text-base">New booking</DialogTitle></DialogHeader>
+          <div className="space-y-4">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="recipientName" className="text-xs">Customer name</Label>
+                <Input id="recipientName" value={recipientName} onChange={(event) => setRecipientName(event.target.value)} placeholder="Customer name" className="h-9" />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="recipientPhone" className="text-xs">Phone number</Label>
+                <Input id="recipientPhone" value={recipientPhone} onChange={(event) => setRecipientPhone(event.target.value)} placeholder="e.g. 2547…" className="h-9" />
+              </div>
             </div>
-            <div className="grid gap-2">
-              <Label>Payment Method</Label>
-              <RadioGroup value={paymentMethod} onValueChange={(val: any) => setPaymentMethod(val)} className="grid grid-cols-2 gap-4">
-                <div>
-                  <RadioGroupItem value="mpesa" id="mpesa" className="peer sr-only" />
-                  <Label htmlFor="mpesa" className="flex flex-col items-center justify-between rounded-md border-2 border-muted bg-popover p-4 hover:bg-accent [&:has([data-state=checked])]:border-primary">
-                    <CreditCard className="mb-2 h-5 w-5" /> M-Pesa
-                  </Label>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label className="text-xs">Package</Label>
+                <Select value={selectedPackage} onValueChange={(value) => { setSelectedPackage(value); const pkg = getPackageById(value); if (pkg) setSelectedService(pkg.name); }}>
+                  <SelectTrigger className="h-9"><SelectValue placeholder="Choose package" /></SelectTrigger>
+                  <SelectContent>
+                    {packages.map((pkg) => (
+                      <SelectItem key={pkg.id} value={pkg.id}>
+                        <span className="flex items-center gap-2"><span className="h-2 w-2 rounded-full" style={{ backgroundColor: getPackageColor(pkg.name) }} />{pkg.name}</span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs">Date</Label>
+                <div className="rounded-md border border-border p-2">
+                  <Calendar
+                    mode="single"
+                    selected={selectedDate}
+                    onSelect={(date) => { setSelectedDate(date); setSelectedTime(''); }}
+                    disabled={(date) => date < new Date(new Date().setHours(0, 0, 0, 0)) || date.getDay() === 1}
+                    className="mx-auto w-full p-1"
+                    classNames={{
+                      months: 'w-full', month: 'w-full space-y-2', caption: 'flex justify-center pt-1 relative items-center text-sm',
+                      head_row: 'flex w-full', head_cell: 'flex-1 text-muted-foreground text-[11px] font-normal',
+                      row: 'flex w-full mt-1', cell: 'flex-1 h-8 p-0 text-center text-xs', day: 'h-8 w-full p-0 text-xs',
+                    }}
+                  />
                 </div>
-                <div>
-                  <RadioGroupItem value="pod" id="pod" className="peer sr-only" />
-                  <Label htmlFor="pod" className="flex flex-col items-center justify-between rounded-md border-2 border-muted bg-popover p-4 hover:bg-accent [&:has([data-state=checked])]:border-primary">
-                    <ShieldCheck className="mb-2 h-5 w-5" /> Pay on Delivery
-                  </Label>
-                </div>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs">Available time</Label>
+                {selectedDate && <span className="text-xs text-muted-foreground">{formatDate(selectedDate)}</span>}
+              </div>
+              <div className="min-h-[76px] rounded-md border border-border p-2">
+                {!selectedDate || !selectedService ? (
+                  <p className="py-5 text-center text-xs text-muted-foreground">Choose a package and date first.</p>
+                ) : availableHours.length === 0 ? (
+                  <p className="py-5 text-center text-xs text-muted-foreground">No times available for this date.</p>
+                ) : (
+                  <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-5">
+                    {availableHours.map(({ time, available }) => {
+                      const date = new Date(time);
+                      const timeValue = date.toTimeString().split(' ')[0];
+                      return (
+                        <Button
+                          key={time}
+                          type="button"
+                          size="sm"
+                          variant={selectedTime === timeValue ? 'default' : 'outline'}
+                          disabled={!available}
+                          onClick={() => setSelectedTime(timeValue)}
+                          className="h-8 px-2 text-xs"
+                        >
+                          {formatTime(date)}
+                        </Button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-xs">Payment method</Label>
+              <RadioGroup value={paymentMethod} onValueChange={(value: 'mpesa' | 'pod') => setPaymentMethod(value)} className="grid grid-cols-2 gap-2">
+                <Label htmlFor="mpesa" className={`flex cursor-pointer items-center gap-2 rounded-md border p-3 text-sm ${paymentMethod === 'mpesa' ? 'border-primary bg-primary/5' : 'border-border'}`}>
+                  <RadioGroupItem value="mpesa" id="mpesa" /><CreditCard className="h-4 w-4" />M-Pesa
+                </Label>
+                <Label htmlFor="pod" className={`flex cursor-pointer items-center gap-2 rounded-md border p-3 text-sm ${paymentMethod === 'pod' ? 'border-primary bg-primary/5' : 'border-border'}`}>
+                  <RadioGroupItem value="pod" id="pod" /><ShieldCheck className="h-4 w-4" />Pay on delivery
+                </Label>
               </RadioGroup>
             </div>
           </div>
-          <div className="flex justify-end gap-3 pt-2 border-t">
-            <Button variant="outline" onClick={() => setIsDialogOpen(false)}>Cancel</Button>
-            <Button onClick={handleCreateBooking} disabled={creating || !selectedDate || !selectedTime || !selectedService || !selectedPackage || !recipientName || !recipientPhone}>
-              {creating ? 'Creating...' : 'Confirm Booking'}
+          <div className="flex justify-end gap-2 border-t border-border pt-3">
+            <Button variant="outline" size="sm" onClick={() => setNewBookingOpen(false)}>Cancel</Button>
+            <Button size="sm" onClick={() => void handleCreateBooking()} disabled={creating || !selectedDate || !selectedTime || !selectedService || !selectedPackage || !recipientName.trim() || !recipientPhone.trim()}>
+              {creating ? 'Saving…' : 'Create booking'}
             </Button>
           </div>
         </DialogContent>
       </Dialog>
 
-      {/* Booking Details Modal */}
+      {/* Payment status */}
+      <Dialog open={isPaymentPending} onOpenChange={setIsPaymentPending}>
+        <DialogContent className="max-w-sm">
+          <div className="flex flex-col items-center gap-3 py-4 text-center">
+            <div className="h-8 w-8 animate-spin rounded-full border-2 border-muted border-t-primary" />
+            <h3 className="text-sm font-semibold">Waiting for payment</h3>
+            <p className="max-w-xs text-xs text-muted-foreground">Complete the payment to confirm this booking. This window will update when a payment result is received.</p>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Booking details */}
       <Dialog open={bookingDetailsOpen} onOpenChange={setBookingDetailsOpen}>
-        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader><DialogTitle>Booking Details</DialogTitle></DialogHeader>
+        <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
+          <DialogHeader><DialogTitle className="text-base">Booking details</DialogTitle></DialogHeader>
           {loadingBookingDetails ? (
-            <div className="flex items-center justify-center py-12"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-primary" /></div>
+            <div className="flex justify-center py-10"><div className="h-6 w-6 animate-spin rounded-full border-2 border-muted border-t-primary" /></div>
           ) : selectedBookingDetails ? (
-            <div className="space-y-5">
-              <Card>
-                <CardContent className="p-4 grid grid-cols-2 gap-4">
-                  <div><Label className="text-muted-foreground text-xs">Customer</Label><p className="font-medium">{selectedBookingDetails.customerName}</p></div>
-                  <div><Label className="text-muted-foreground text-xs">Phone</Label><p className="font-medium">{selectedBookingDetails.customerPhone || 'N/A'}</p></div>
-                  <div><Label className="text-muted-foreground text-xs">Service</Label><p className="font-medium">{selectedBookingDetails.service}</p></div>
-                  <div><Label className="text-muted-foreground text-xs">Status</Label><Badge variant="outline" className={getStatusClass(selectedBookingDetails.status)}>{selectedBookingDetails.status}</Badge></div>
-                  <div><Label className="text-muted-foreground text-xs">Date</Label><p className="font-medium">{selectedBookingDetails.date.toLocaleDateString()}</p></div>
-                  <div><Label className="text-muted-foreground text-xs">Time</Label><p className="font-medium">{selectedBookingDetails.time}</p></div>
-                </CardContent>
-              </Card>
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-x-5 gap-y-3 rounded-md border border-border p-3 sm:grid-cols-3">
+                <div><Label className="text-[11px] text-muted-foreground">Customer</Label><p className="mt-0.5 text-sm font-medium">{selectedBookingDetails.customerName}</p></div>
+                <div><Label className="text-[11px] text-muted-foreground">Phone</Label><p className="mt-0.5 text-sm">{selectedBookingDetails.customerPhone || '—'}</p></div>
+                <div><Label className="text-[11px] text-muted-foreground">Package</Label><p className="mt-0.5 text-sm font-medium">{selectedBookingDetails.service}</p></div>
+                <div><Label className="text-[11px] text-muted-foreground">Date</Label><p className="mt-0.5 text-sm">{formatDate(selectedBookingDetails.date)}</p></div>
+                <div><Label className="text-[11px] text-muted-foreground">Time</Label><p className="mt-0.5 text-sm">{selectedBookingDetails.time}</p></div>
+                <div><Label className="text-[11px] text-muted-foreground">Status</Label><div className="mt-1"><Badge variant="outline" className={`capitalize ${getStatusClass(selectedBookingDetails.status)}`}>{selectedBookingDetails.status}</Badge></div></div>
+              </div>
 
               {bookingPayments.length > 0 && (
-                <Card>
-                  <CardHeader className="pb-2"><CardTitle className="text-sm font-medium flex items-center gap-2"><CreditCard className="h-4 w-4" /> Payments</CardTitle></CardHeader>
-                  <CardContent className="space-y-2">
+                <section className="space-y-2">
+                  <div className="flex items-center justify-between border-b border-border pb-1.5"><h3 className="text-sm font-semibold">Payments</h3><span className="text-xs text-muted-foreground">{bookingPayments.length} records</span></div>
+                  <div className="divide-y divide-border rounded-md border border-border">
                     {bookingPayments.map((payment: any) => (
-                      <div key={payment.id} className="flex items-center justify-between p-2.5 rounded-md border border-border text-sm">
-                        <div>
-                          <p className="font-medium">KSh {payment.amount?.toLocaleString() || '0'}</p>
-                          <Badge variant={payment.status === 'success' ? 'default' : 'secondary'} className="mt-1">{payment.status}</Badge>
-                        </div>
-                        <span className="text-xs text-muted-foreground">{new Date(payment.createdAt).toLocaleDateString()}</span>
+                      <div key={payment.id} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
+                        <div><p className="font-medium tabular-nums">KSh {payment.amount?.toLocaleString() || '0'}</p><p className="text-xs text-muted-foreground">{new Date(payment.createdAt).toLocaleDateString()}</p></div>
+                        <Badge variant={payment.status === 'success' ? 'default' : 'secondary'} className="capitalize">{payment.status}</Badge>
                       </div>
                     ))}
-                  </CardContent>
-                </Card>
+                  </div>
+                </section>
               )}
 
-              <Card>
-                <CardHeader className="pb-2"><CardTitle className="text-sm font-medium flex items-center justify-between"><span className="flex items-center gap-2"><Sparkles className="h-4 w-4" /> Add-ons</span><Badge variant="outline">{bookingAddons.length}</Badge></CardTitle></CardHeader>
-                <CardContent>
-                  {bookingAddons.length === 0 ? <p className="text-sm text-muted-foreground text-center py-3">No add-ons requested</p> : (
-                    <div className="space-y-1.5">
-                      {bookingAddons.map((addon: any) => (
-                        <div key={addon.id} className="flex items-center justify-between gap-3 px-2.5 py-1.5 rounded-md border border-border text-sm">
-                          <span className="truncate">{addon.name}{addon.quantity > 1 ? ` \u00d7${addon.quantity}` : ''}</span>
-                          <span className="flex items-center gap-2 shrink-0">
-                            <Badge variant={addon.status === 'pending' ? 'secondary' : 'default'} className="capitalize">{addon.status}</Badge>
-                            <span className="font-medium tabular-nums">{addon.totalPrice > 0 ? `KSh ${addon.totalPrice.toLocaleString()}` : 'Quoted'}</span>
-                          </span>
-                        </div>
-                      ))}
-                      {addonsTotal > 0 && (
-                        <div className="flex items-center justify-between px-2.5 pt-1.5 text-sm font-semibold">
-                          <span>Add-ons total</span>
-                          <span className="tabular-nums">KSh {addonsTotal.toLocaleString()}</span>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
+              <section className="space-y-2">
+                <div className="flex items-center justify-between border-b border-border pb-1.5"><h3 className="flex items-center gap-2 text-sm font-semibold"><Sparkles className="h-3.5 w-3.5" />Add-ons</h3><span className="text-xs text-muted-foreground">{bookingAddons.length} items</span></div>
+                {bookingAddons.length === 0 ? <p className="py-2 text-xs text-muted-foreground">No add-ons recorded.</p> : (
+                  <div className="divide-y divide-border rounded-md border border-border">
+                    {bookingAddons.map((addon: any) => (
+                      <div key={addon.id} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
+                        <span className="min-w-0 truncate">{addon.name}{addon.quantity > 1 ? ` ×${addon.quantity}` : ''}</span>
+                        <span className="flex shrink-0 items-center gap-2"><Badge variant={addon.status === 'pending' ? 'secondary' : 'default'} className="text-[10px] capitalize">{addon.status}</Badge><span className="text-xs font-medium tabular-nums">{addon.totalPrice > 0 ? `KSh ${addon.totalPrice.toLocaleString()}` : 'Quoted'}</span></span>
+                      </div>
+                    ))}
+                    {addonsTotal > 0 && <div className="flex justify-between px-3 py-2 text-xs font-semibold"><span>Add-ons total</span><span className="tabular-nums">KSh {addonsTotal.toLocaleString()}</span></div>}
+                  </div>
+                )}
+              </section>
 
-              <Card>
-                <CardHeader className="pb-2"><CardTitle className="text-sm font-medium flex items-center justify-between"><span className="flex items-center gap-2"><Bell className="h-4 w-4" /> Reminders</span><Badge variant="outline">{bookingReminders.length}</Badge></CardTitle></CardHeader>
-                <CardContent>
-                  {bookingReminders.length === 0 ? <p className="text-sm text-muted-foreground text-center py-3">No reminders scheduled</p> : (
-                    <div className="space-y-2">
-                      {bookingReminders.map((reminder) => (
-                        <div key={reminder.id} className="flex items-center justify-between p-2.5 rounded-md border border-border text-sm">
-                          <div>
-                            <div className="flex items-center gap-2"><p className="font-medium">{reminder.type} Reminder</p><Badge variant={reminder.status === 'sent' ? 'default' : reminder.status === 'pending' ? 'secondary' : 'destructive'}>{reminder.status}</Badge></div>
-                            <p className="text-xs text-muted-foreground">Scheduled: {new Date(reminder.scheduledFor).toLocaleString()}</p>
-                          </div>
-                          {reminder.status === 'pending' && <Button size="sm" variant="outline" onClick={() => handleSendReminder(reminder.id)}><Send className="h-3.5 w-3.5 mr-1.5" /> Send Now</Button>}
-                        </div>
-                      ))}
+              <div className="grid gap-4 sm:grid-cols-2">
+                <section className="space-y-2">
+                  <div className="flex items-center justify-between border-b border-border pb-1.5"><h3 className="flex items-center gap-2 text-sm font-semibold"><Bell className="h-3.5 w-3.5" />Reminders</h3><span className="text-xs text-muted-foreground">{bookingReminders.length}</span></div>
+                  {bookingReminders.length === 0 ? <p className="py-1 text-xs text-muted-foreground">No reminders scheduled.</p> : bookingReminders.map((reminder) => (
+                    <div key={reminder.id} className="flex items-center justify-between gap-2 border-b border-border/60 py-1.5 text-xs last:border-0">
+                      <div className="min-w-0"><p className="font-medium">{reminder.type} reminder</p><p className="text-muted-foreground">{new Date(reminder.scheduledFor).toLocaleString()}</p></div>
+                      {reminder.status === 'pending' ? <Button size="sm" variant="outline" className="h-7 shrink-0 px-2 text-[11px]" onClick={() => void handleSendReminder(reminder.id)}><Send className="mr-1 h-3 w-3" />Send</Button> : <Badge variant="secondary" className="text-[10px]">{reminder.status}</Badge>}
                     </div>
-                  )}
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader className="pb-2"><CardTitle className="text-sm font-medium flex items-center justify-between"><span className="flex items-center gap-2"><MessageCircle className="h-4 w-4" /> Followups</span><Badge variant="outline">{bookingFollowups.length}</Badge></CardTitle></CardHeader>
-                <CardContent>
-                  {bookingFollowups.length === 0 ? <p className="text-sm text-muted-foreground text-center py-3">No followups scheduled</p> : (
-                    <div className="space-y-2">
-                      {bookingFollowups.map((followup) => (
-                        <div key={followup.id} className="flex items-center justify-between p-2.5 rounded-md border border-border text-sm">
-                          <div>
-                            <div className="flex items-center gap-2"><p className="font-medium capitalize">{followup.type} Followup</p><Badge variant={followup.status === 'sent' ? 'default' : followup.status === 'pending' ? 'secondary' : 'destructive'}>{followup.status}</Badge></div>
-                            <p className="text-xs text-muted-foreground">Scheduled: {new Date(followup.scheduledFor).toLocaleString()}</p>
-                          </div>
-                          {followup.status === 'pending' && <Button size="sm" variant="outline" onClick={() => handleSendFollowup(followup.id)}><Send className="h-3.5 w-3.5 mr-1.5" /> Send Now</Button>}
-                        </div>
-                      ))}
+                  ))}
+                </section>
+                <section className="space-y-2">
+                  <div className="flex items-center justify-between border-b border-border pb-1.5"><h3 className="flex items-center gap-2 text-sm font-semibold"><MessageCircle className="h-3.5 w-3.5" />Follow-ups</h3><span className="text-xs text-muted-foreground">{bookingFollowups.length}</span></div>
+                  {bookingFollowups.length === 0 ? <p className="py-1 text-xs text-muted-foreground">No follow-ups scheduled.</p> : bookingFollowups.map((followup) => (
+                    <div key={followup.id} className="flex items-center justify-between gap-2 border-b border-border/60 py-1.5 text-xs last:border-0">
+                      <div className="min-w-0"><p className="font-medium capitalize">{followup.type} follow-up</p><p className="text-muted-foreground">{new Date(followup.scheduledFor).toLocaleString()}</p></div>
+                      {followup.status === 'pending' ? <Button size="sm" variant="outline" className="h-7 shrink-0 px-2 text-[11px]" onClick={() => void handleSendFollowup(followup.id)}><Send className="mr-1 h-3 w-3" />Send</Button> : <Badge variant="secondary" className="text-[10px]">{followup.status}</Badge>}
                     </div>
-                  )}
-                </CardContent>
-              </Card>
+                  ))}
+                </section>
+              </div>
 
               {invoices[selectedBookingDetails.id] && (
-                <Card>
-                  <CardContent className="p-4 flex items-center justify-between">
-                    <div>
-                      <p className="font-medium">Invoice #{invoices[selectedBookingDetails.id].invoiceNumber}</p>
-                      <p className="text-sm text-muted-foreground">Total: KSh {invoices[selectedBookingDetails.id].total?.toLocaleString()}</p>
-                    </div>
-                    <div className="flex gap-2">
-                      <Button size="sm" variant="outline" onClick={() => window.open(invoicesApi.downloadInvoice(invoices[selectedBookingDetails.id].id), '_blank')}><Download className="h-4 w-4 mr-1.5" /> Download</Button>
-                      <Button size="sm" onClick={() => handleSendInvoice(invoices[selectedBookingDetails.id].id, selectedBookingDetails.customerName)} disabled={invoices[selectedBookingDetails.id].status === 'sent'}>
-                        <Send className="h-4 w-4 mr-1.5" /> {invoices[selectedBookingDetails.id].status === 'sent' ? 'Sent' : 'Send'}
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
+                <section className="flex flex-wrap items-center justify-between gap-3 border-y border-border py-2">
+                  <div><p className="text-sm font-medium">Invoice #{invoices[selectedBookingDetails.id].invoiceNumber}</p><p className="text-xs text-muted-foreground">Total: KSh {invoices[selectedBookingDetails.id].total?.toLocaleString()}</p></div>
+                  <div className="flex gap-1.5">
+                    <Button size="sm" variant="outline" className="h-8" onClick={() => window.open(invoicesApi.downloadInvoice(invoices[selectedBookingDetails.id].id), '_blank')}><Download className="mr-1.5 h-3.5 w-3.5" />Download</Button>
+                    <Button size="sm" className="h-8" onClick={() => void handleSendInvoice(invoices[selectedBookingDetails.id].id, selectedBookingDetails.customerName)} disabled={invoices[selectedBookingDetails.id].status === 'sent'}><Send className="mr-1.5 h-3.5 w-3.5" />{invoices[selectedBookingDetails.id].status === 'sent' ? 'Sent' : 'Send'}</Button>
+                  </div>
+                </section>
               )}
 
-              <div className="flex justify-end gap-2 pt-2 border-t">
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    setEditingBooking(selectedBookingDetails);
-                    setRescheduleDate(selectedBookingDetails.date);
-                    setRescheduleTime(selectedBookingDetails.time);
-                    setRescheduleService(selectedBookingDetails.service);
-                    setBookingDetailsOpen(false);
-                    setEditDialogOpen(true);
-                  }}
-                >
-                  <Edit className="h-4 w-4 mr-2" /> Edit/Reschedule
+              <div className="flex flex-wrap justify-end gap-2 border-t border-border pt-3">
+                <Button size="sm" variant="outline" onClick={() => { setEditingBooking(selectedBookingDetails); setRescheduleDate(selectedBookingDetails.date); setRescheduleTime(selectedBookingDetails.timeValue); setRescheduleService(selectedBookingDetails.service); setBookingDetailsOpen(false); setEditDialogOpen(true); }}>
+                  <Edit className="mr-1.5 h-3.5 w-3.5" />Edit / reschedule
                 </Button>
-                <Button variant="outline" onClick={() => { fetchCustomerHistory(selectedBookingDetails); setBookingDetailsOpen(false); }}>
-                  <History className="h-4 w-4 mr-2" /> View Customer History
+                <Button size="sm" variant="outline" onClick={() => { void fetchCustomerHistory(selectedBookingDetails); setBookingDetailsOpen(false); }}>
+                  <History className="mr-1.5 h-3.5 w-3.5" />Customer history
                 </Button>
               </div>
             </div>
@@ -1224,150 +1156,117 @@ export default function Bookings() {
         </DialogContent>
       </Dialog>
 
-      {/* Edit/Reschedule Dialog */}
+      {/* Edit booking */}
       <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
-        <DialogContent className="sm:max-w-lg max-h-[85vh] overflow-y-auto">
-          <DialogHeader><DialogTitle>Reschedule Booking</DialogTitle></DialogHeader>
+        <DialogContent className="max-h-[85vh] max-w-lg overflow-y-auto">
+          <DialogHeader><DialogTitle className="text-base">Edit booking</DialogTitle></DialogHeader>
           {editingBooking && (
-            <div className="space-y-5 py-1">
-              {/* What's being rescheduled */}
-              <div className="flex items-center justify-between rounded-lg border border-border bg-muted/40 px-4 py-3">
-                <div>
-                  <p className="text-sm font-medium text-foreground">{editingBooking.customerName}</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    Currently {editingBooking.date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} at {editingBooking.time}
-                  </p>
-                </div>
-                <Badge variant="outline" className={getStatusClass(editingBooking.status)}>{editingBooking.status}</Badge>
+            <div className="space-y-4">
+              <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+                <div><p className="text-sm font-medium">{editingBooking.customerName}</p><p className="text-xs text-muted-foreground">Currently {formatDate(editingBooking.date)} at {editingBooking.time}</p></div>
+                <Badge variant="outline" className={`capitalize ${getStatusClass(editingBooking.status)}`}>{editingBooking.status}</Badge>
               </div>
-
-              <div className="grid gap-2">
-                <Label>Service/Package</Label>
+              <div className="space-y-1.5">
+                <Label className="text-xs">Package</Label>
                 <Select value={rescheduleService} onValueChange={setRescheduleService}>
-                  <SelectTrigger><SelectValue placeholder="Select service" /></SelectTrigger>
+                  <SelectTrigger className="h-9"><SelectValue placeholder="Select package" /></SelectTrigger>
                   <SelectContent>{packages.map((pkg) => <SelectItem key={pkg.id} value={pkg.name}>{pkg.name}</SelectItem>)}</SelectContent>
                 </Select>
               </div>
-
-              <div className="grid gap-2">
-                <Label>New Date</Label>
-                <div className="flex justify-center rounded-md border border-border py-2">
-                  <Calendar mode="single" selected={rescheduleDate} onSelect={setRescheduleDate} disabled={(date) => date < new Date()} />
+              <div className="space-y-1.5">
+                <Label className="text-xs">New date</Label>
+                <div className="rounded-md border border-border p-2">
+                  <Calendar
+                    mode="single"
+                    selected={rescheduleDate}
+                    onSelect={(date) => { setRescheduleDate(date); setRescheduleTime(''); }}
+                    disabled={(date) => date < new Date(new Date().setHours(0, 0, 0, 0)) || date.getDay() === 1}
+                    className="mx-auto w-full p-1"
+                    classNames={{
+                      months: 'w-full', month: 'w-full space-y-2', caption: 'flex justify-center pt-1 relative items-center text-sm',
+                      head_row: 'flex w-full', head_cell: 'flex-1 text-muted-foreground text-[11px] font-normal',
+                      row: 'flex w-full mt-1', cell: 'flex-1 h-8 p-0 text-center text-xs', day: 'h-8 w-full p-0 text-xs',
+                    }}
+                  />
                 </div>
               </div>
-
-              <div className="grid gap-2">
-                <Label>New Time</Label>
-                {!rescheduleDate ? (
-                  <p className="text-sm text-muted-foreground py-6 text-center border border-dashed border-border rounded-md">Select a date first</p>
-                ) : loadingRescheduleHours ? (
-                  <div className="flex items-center justify-center py-6"><div className="animate-spin rounded-full h-5 w-5 border-b-2 border-primary" /></div>
-                ) : rescheduleAvailableHours.length === 0 ? (
-                  <p className="text-sm text-muted-foreground py-6 text-center border border-dashed border-border rounded-md">No available times</p>
-                ) : (
-                  <div className="space-y-3">
-                    {[
-                      { label: 'Morning', hours: rescheduleAvailableHours.filter(h => new Date(h.time).getHours() < 12) },
-                      { label: 'Afternoon', hours: rescheduleAvailableHours.filter(h => new Date(h.time).getHours() >= 12) },
-                    ].filter(group => group.hours.length > 0).map(group => (
-                      <div key={group.label}>
-                        <p className="text-xs font-medium text-muted-foreground mb-1.5">{group.label}</p>
-                        <div className="grid grid-cols-4 gap-2">
-                          {group.hours.map(({ time, available }) => {
-                            const d = new Date(time);
-                            const timeStr = d.toTimeString().split(' ')[0];
-                            return (
-                              <Button
-                                key={time}
-                                variant={rescheduleTime === timeStr ? 'default' : 'outline'}
-                                disabled={!available}
-                                onClick={() => setRescheduleTime(timeStr)}
-                                className={`h-9 px-1 text-xs ${!available ? 'opacity-50' : ''}`}
-                                size="sm"
-                              >
-                                {d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
-                              </Button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    ))}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between"><Label className="text-xs">New time</Label>{loadingRescheduleHours && <span className="text-xs text-muted-foreground">Loading times…</span>}</div>
+                {!rescheduleDate ? <p className="rounded-md border border-dashed border-border py-5 text-center text-xs text-muted-foreground">Select a date first.</p> : loadingRescheduleHours ? <div className="py-5 text-center"><div className="mx-auto h-5 w-5 animate-spin rounded-full border-2 border-muted border-t-primary" /></div> : rescheduleAvailableHours.length === 0 ? <p className="rounded-md border border-dashed border-border py-5 text-center text-xs text-muted-foreground">No available times for this date.</p> : (
+                  <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-4">
+                    {rescheduleAvailableHours.map(({ time, available }) => {
+                      const date = new Date(time);
+                      const value = date.toTimeString().split(' ')[0];
+                      return <Button key={time} size="sm" variant={rescheduleTime === value ? 'default' : 'outline'} disabled={!available} onClick={() => setRescheduleTime(value)} className="h-8 px-1 text-xs">{formatTime(date)}</Button>;
+                    })}
                   </div>
                 )}
               </div>
-
-              <div className="flex justify-end gap-3 pt-2 border-t">
-                <Button variant="outline" onClick={() => setEditDialogOpen(false)}>Cancel</Button>
-                <Button onClick={handleRescheduleBooking} disabled={savingBooking || !rescheduleDate || !rescheduleTime}>{savingBooking ? 'Saving...' : 'Save Changes'}</Button>
+              <div className="flex justify-end gap-2 border-t border-border pt-3">
+                <Button size="sm" variant="outline" onClick={() => setEditDialogOpen(false)}>Cancel</Button>
+                <Button size="sm" onClick={() => void handleRescheduleBooking()} disabled={savingBooking || !rescheduleDate || !rescheduleTime}>{savingBooking ? 'Saving…' : 'Save changes'}</Button>
               </div>
             </div>
           )}
         </DialogContent>
       </Dialog>
 
-      {/* Customer History Sidebar */}
+      {/* Customer history */}
       <Dialog open={customerContextOpen} onOpenChange={setCustomerContextOpen}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader><DialogTitle>Customer History</DialogTitle></DialogHeader>
+        <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
+          <DialogHeader><DialogTitle className="text-base">Customer history</DialogTitle></DialogHeader>
           {loadingCustomerHistory ? (
-            <div className="flex items-center justify-center py-12"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-primary" /></div>
+            <div className="flex justify-center py-10"><div className="h-6 w-6 animate-spin rounded-full border-2 border-muted border-t-primary" /></div>
           ) : customerHistory ? (
-            <div className="space-y-5">
-              <Card>
-                <CardHeader className="pb-2 flex-row items-center justify-between">
-                  <CardTitle className="text-sm font-medium">Customer Info</CardTitle>
-                  {selectedCustomerId && (
-                    <Button variant="outline" size="sm" onClick={() => { navigate(`/customers/${selectedCustomerId}`); setCustomerContextOpen(false); }}>
-                      <ExternalLink className="h-4 w-4 mr-1.5" /> Full Profile
-                    </Button>
-                  )}
-                </CardHeader>
-                <CardContent className="grid grid-cols-2 gap-4">
-                  <div><Label className="text-muted-foreground text-xs">Name</Label><p className="font-medium">{customerHistory.customer?.name || 'N/A'}</p></div>
-                  <div><Label className="text-muted-foreground text-xs">Phone</Label><p className="font-medium">{customerHistory.customer?.phone || 'N/A'}</p></div>
-                  <div><Label className="text-muted-foreground text-xs">Total Bookings</Label><p className="font-semibold text-xl">{customerHistory.totalBookings}</p></div>
-                  <div><Label className="text-muted-foreground text-xs">Total Spent</Label><p className="font-semibold text-xl">KSh {customerHistory.totalSpent.toLocaleString()}</p></div>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader className="pb-2"><CardTitle className="text-sm font-medium flex items-center justify-between">Previous Bookings <Badge variant="outline">{customerHistory.bookings.length}</Badge></CardTitle></CardHeader>
-                <CardContent>
-                  {customerHistory.bookings.length === 0 ? <p className="text-sm text-muted-foreground text-center py-3">No previous bookings</p> : (
-                    <div className="space-y-2">
-                      {customerHistory.bookings.slice(0, 10).map((booking: any) => (
-                        <div
-                          key={booking.id}
-                          className="flex items-center justify-between p-2.5 rounded-md border border-border hover:bg-muted/50 transition-colors cursor-pointer"
-                          onClick={() => {
-                            fetchBookingDetails({
-                              id: booking.id,
-                              customerName: booking.customer?.name || 'Unknown',
-                              customerPhone: booking.customer?.phone || '',
-                              service: booking.service,
-                              date: new Date(booking.dateTime),
-                              time: new Date(booking.dateTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                              status: booking.status,
-                              googleEventId: booking.googleEventId,
-                            });
-                            setCustomerContextOpen(false);
-                          }}
-                        >
-                          <div>
-                            <p className="font-medium text-sm">{booking.service}</p>
-                            <p className="text-xs text-muted-foreground">{new Date(booking.dateTime).toLocaleDateString()} - {new Date(booking.dateTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
-                          </div>
-                          <Badge variant="outline" className={getStatusClass(booking.status)}>{booking.status}</Badge>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-start justify-between gap-3 rounded-md border border-border p-3">
+                <div className="grid flex-1 grid-cols-2 gap-x-5 gap-y-2">
+                  <div><Label className="text-[11px] text-muted-foreground">Customer</Label><p className="mt-0.5 text-sm font-medium">{customerHistory.customer?.name || '—'}</p></div>
+                  <div><Label className="text-[11px] text-muted-foreground">Phone</Label><p className="mt-0.5 text-sm">{customerHistory.customer?.phone || '—'}</p></div>
+                  <div><Label className="text-[11px] text-muted-foreground">Bookings</Label><p className="mt-0.5 text-sm font-semibold tabular-nums">{customerHistory.totalBookings}</p></div>
+                  <div><Label className="text-[11px] text-muted-foreground">Total spent</Label><p className="mt-0.5 text-sm font-semibold tabular-nums">KSh {customerHistory.totalSpent.toLocaleString()}</p></div>
+                </div>
+                {selectedCustomerId && <Button size="sm" variant="outline" className="h-8" onClick={() => { navigate(`/customers/${selectedCustomerId}`); setCustomerContextOpen(false); }}><ExternalLink className="mr-1.5 h-3.5 w-3.5" />Full profile</Button>}
+              </div>
+              <section className="space-y-2">
+                <div className="flex items-center justify-between border-b border-border pb-1.5"><h3 className="text-sm font-semibold">Previous bookings</h3><span className="text-xs text-muted-foreground">{customerHistory.bookings.length} records</span></div>
+                {customerHistory.bookings.length === 0 ? <p className="py-5 text-center text-xs text-muted-foreground">No previous bookings.</p> : (
+                  <div className="divide-y divide-border rounded-md border border-border">
+                    {customerHistory.bookings.slice(0, 10).map((booking: any) => (
+                      <button
+                        key={booking.id}
+                        type="button"
+                        className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-muted/40"
+                        onClick={() => {
+                          void fetchBookingDetails({
+                            id: booking.id,
+                            customerName: booking.customer?.name || 'Unknown',
+                            customerPhone: booking.customer?.phone || '',
+                            service: booking.service,
+                            date: new Date(booking.dateTime),
+                            time: formatTime(new Date(booking.dateTime)),
+                            timeValue: `${String(new Date(booking.dateTime).getHours()).padStart(2, '0')}:${String(new Date(booking.dateTime).getMinutes()).padStart(2, '0')}`,
+                            status: booking.status,
+                            googleEventId: booking.googleEventId,
+                          });
+                          setCustomerContextOpen(false);
+                        }}
+                      >
+                        <span className="min-w-0"><span className="block truncate text-sm font-medium">{booking.service}</span><span className="block text-xs text-muted-foreground">{formatDate(new Date(booking.dateTime))} · {formatTime(new Date(booking.dateTime))}</span></span>
+                        <span className="flex shrink-0 items-center gap-2"><Badge variant="outline" className={`capitalize text-[10px] ${getStatusClass(booking.status)}`}>{booking.status}</Badge><ChevronRight className="h-3.5 w-3.5 text-muted-foreground" /></span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </section>
             </div>
           ) : null}
         </DialogContent>
       </Dialog>
     </div>
   );
+}
+
+function getBookingDuration(booking: Booking): number {
+  return booking.durationMinutes || 120;
 }
