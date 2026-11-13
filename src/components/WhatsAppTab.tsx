@@ -16,31 +16,12 @@ import {
   updateConversationLearningQaLabel,
 } from '@/api/analytics';
 import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  CartesianGrid,
-  PieChart,
-  Pie,
-  Cell,
-  Legend,
-  AreaChart,
-  Area
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
+  PieChart, Pie, Cell, Legend, AreaChart, Area,
 } from 'recharts';
 import {
-  Users,
-  MessageSquare,
-  Send,
-  TrendingUp,
-  Clock,
-  Calendar,
-  Smile,
-  MessageCircle,
-  Activity,
-  Bot
+  Users, MessageSquare, Send, TrendingUp, Clock, Calendar, Smile,
+  MessageCircle, Activity, Bot,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -76,51 +57,59 @@ type ConversationLearningResponse = {
   source?: 'conversation_learning' | 'derived_from_messages';
 };
 
+const LOW_CONFIDENCE_THRESHOLD = 0.6;
 const COLORS = {
-  primary: '#3b82f6',
-  success: '#22c55e',
-  warning: '#eab308',
-  danger: '#ef4444',
-  neutral: '#94a3b8',
-  purple: '#8b5cf6',
-  teal: '#14b8a6',
-  slate: '#64748b'
+  primary: '#3b82f6', success: '#22c55e', warning: '#eab308', danger: '#ef4444',
+  neutral: '#94a3b8', purple: '#8b5cf6', teal: '#14b8a6', slate: '#64748b',
 };
-
 const SENTIMENT_COLORS = {
   positive: COLORS.success,
   negative: COLORS.danger,
   neutral: COLORS.neutral,
 };
 
+type SectionProps = { title: string; icon?: React.ElementType; action?: React.ReactNode; children: React.ReactNode; className?: string };
+const Section = ({ title, icon: Icon, action, children, className = '' }: SectionProps) => (
+  <Card className={`border border-border/70 shadow-none ${className}`}>
+    <CardHeader className="flex flex-row items-center justify-between gap-3 space-y-0 px-4 py-3">
+      <CardTitle className="flex items-center gap-2 text-[13px] font-semibold">
+        {Icon && <Icon className="h-4 w-4 text-muted-foreground" />}
+        {title}
+      </CardTitle>
+      {action}
+    </CardHeader>
+    <CardContent className="px-4 pb-4 pt-0">{children}</CardContent>
+  </Card>
+);
+
 const CustomTooltip = ({ active, payload, label }: any) => {
-  if (active && payload && payload.length) {
-    return (
-      <div className="bg-popover p-3 border border-border shadow-lg rounded-lg text-xs">
-        <p className="font-semibold text-foreground mb-1">{label}</p>
-        {payload.map((entry: any, index: number) => (
-          <div key={index} className="flex items-center gap-2 text-muted-foreground">
-            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color }} />
-            <span>{entry.name}:</span>
-            <span className="font-medium text-foreground">{entry.value}</span>
-          </div>
-        ))}
-      </div>
-    );
-  }
-  return null;
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="rounded-md border border-border bg-popover px-3 py-2 text-xs shadow-md">
+      <p className="mb-1 font-semibold text-foreground">{label}</p>
+      {payload.map((entry: any, index: number) => (
+        <div key={index} className="flex items-center gap-2 text-muted-foreground">
+          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: entry.color }} />
+          <span>{entry.name}:</span>
+          <span className="font-medium text-foreground">{entry.value}</span>
+        </div>
+      ))}
+    </div>
+  );
 };
 
+const chartAxis = { fontSize: 10, fill: 'hsl(var(--muted-foreground))' };
+const chartGrid = '#e2e8f0';
+
 const WhatsAppTab = () => {
-  const LOW_CONFIDENCE_THRESHOLD = 0.6;
   const [loading, setLoading] = useState(true);
   const [stats, setStats] = useState({
     totalCustomers: 0,
     inboundMessages: 0,
     outboundMessages: 0,
     bookingConversionRate: 0,
-    peakHours: [],
-    peakDays: [],
+    peakHours: [] as any[],
+    peakDays: [] as any[],
   });
   const [sentiment, setSentiment] = useState<any>(null);
   const [sentimentTrend, setSentimentTrend] = useState<any[]>([]);
@@ -134,112 +123,71 @@ const WhatsAppTab = () => {
   const [showLikelyIncorrectOnly, setShowLikelyIncorrectOnly] = useState(false);
   const [qaUpdating, setQaUpdating] = useState<Record<string, boolean>>({});
 
-  const confidenceLabel = (v?: number) => {
-    if (typeof v !== 'number') return 'n/a';
-    if (v >= 0.85) return 'high';
-    if (v >= 0.6) return 'med';
+  const confidenceLabel = (value?: number) => {
+    if (typeof value !== 'number') return 'n/a';
+    if (value >= 0.85) return 'high';
+    if (value >= LOW_CONFIDENCE_THRESHOLD) return 'med';
+    return 'low';
+  };
+  const riskLabel = (score?: number) => {
+    if (typeof score !== 'number') return 'n/a';
+    if (score >= 0.8) return 'high';
+    if (score >= LOW_CONFIDENCE_THRESHOLD) return 'med';
     return 'low';
   };
 
   const topLearningRows = useMemo(() => learningRows.slice(0, 20), [learningRows]);
   const lowConfidenceCount = useMemo(
     () => topLearningRows.filter((row) => typeof row.metadata?.intentConfidence === 'number' && row.metadata.intentConfidence < LOW_CONFIDENCE_THRESHOLD).length,
-    [topLearningRows]
+    [topLearningRows],
   );
   const likelyIncorrectCount = useMemo(
-    () => topLearningRows.filter((row) => row.metadata?.likelyIncorrect === true || ((row.metadata?.likelyIncorrectScore || 0) >= 0.6)).length,
-    [topLearningRows]
+    () => topLearningRows.filter((row) => row.metadata?.likelyIncorrect === true || (row.metadata?.likelyIncorrectScore || 0) >= 0.6).length,
+    [topLearningRows],
   );
-  const visibleLearningRows = useMemo(() => {
-    return topLearningRows.filter((row) => {
-      const isLowConfidence = typeof row.metadata?.intentConfidence === 'number' && row.metadata.intentConfidence < LOW_CONFIDENCE_THRESHOLD;
-      const isLikelyIncorrect = row.metadata?.likelyIncorrect === true || ((row.metadata?.likelyIncorrectScore || 0) >= 0.6);
-
-      if (showLowConfidenceOnly && !isLowConfidence) return false;
-      if (showLikelyIncorrectOnly && !isLikelyIncorrect) return false;
-      return true;
-    });
-  }, [showLowConfidenceOnly, showLikelyIncorrectOnly, topLearningRows]);
-
-  const riskLabel = (score?: number) => {
-    if (typeof score !== 'number') return 'n/a';
-    if (score >= 0.8) return 'high';
-    if (score >= 0.6) return 'med';
-    return 'low';
-  };
+  const visibleLearningRows = useMemo(() => topLearningRows.filter((row) => {
+    const isLowConfidence = typeof row.metadata?.intentConfidence === 'number' && row.metadata.intentConfidence < LOW_CONFIDENCE_THRESHOLD;
+    const isLikelyIncorrect = row.metadata?.likelyIncorrect === true || (row.metadata?.likelyIncorrectScore || 0) >= 0.6;
+    if (showLowConfidenceOnly && !isLowConfidence) return false;
+    if (showLikelyIncorrectOnly && !isLikelyIncorrect) return false;
+    return true;
+  }), [showLowConfidenceOnly, showLikelyIncorrectOnly, topLearningRows]);
 
   const setQaLabel = async (rowId: string, qaLabel: 'correct' | 'partially_correct' | 'incorrect' | 'unsafe') => {
     try {
-      setQaUpdating((prev) => ({ ...prev, [rowId]: true }));
+      setQaUpdating((previous) => ({ ...previous, [rowId]: true }));
       await updateConversationLearningQaLabel(rowId, qaLabel);
-      setLearningRows((prev) =>
-        prev.map((row) => {
-          if (row.id !== rowId) return row;
-          const nextMetadata = {
-            ...(row.metadata || {}),
-            qaLabel,
-            qaReviewedAt: new Date().toISOString(),
-          };
-          return { ...row, metadata: nextMetadata };
-        })
-      );
+      setLearningRows((previous) => previous.map((row) => row.id !== rowId ? row : ({
+        ...row,
+        metadata: { ...(row.metadata || {}), qaLabel, qaReviewedAt: new Date().toISOString() },
+      })));
     } catch (error) {
       console.error('Failed to update QA label:', error);
     } finally {
-      setQaUpdating((prev) => ({ ...prev, [rowId]: false }));
+      setQaUpdating((previous) => ({ ...previous, [rowId]: false }));
     }
   };
 
   const escapeCsv = (value: unknown) => {
-    const s = String(value ?? '');
-    if (/[",\n]/.test(s)) {
-      return `"${s.replace(/"/g, '""')}"`;
-    }
-    return s;
+    const text = String(value ?? '');
+    return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
   };
-
   const exportLowConfidenceCsv = () => {
-    const lowRows = topLearningRows.filter(
-      (row) => typeof row.metadata?.intentConfidence === 'number' && row.metadata.intentConfidence < LOW_CONFIDENCE_THRESHOLD
-    );
-
-    if (lowRows.length === 0) return;
-
-    const header = [
-      'when',
-      'customer',
-      'intent',
-      'intent_confidence',
-      'tone',
-      'outcome',
-      'status',
-      'platform',
-      'intent_rule',
-      'user_message',
-      'ai_response',
-    ];
-
-    const lines = lowRows.map((row) => [
-      new Date(row.createdAt).toISOString(),
-      row.customer?.name || row.customer?.id || 'Unknown',
-      row.extractedIntent || 'unknown',
-      typeof row.metadata?.intentConfidence === 'number' ? Math.round(row.metadata.intentConfidence * 100) : '',
-      row.detectedEmotionalTone || 'neutral',
-      row.conversationOutcome || 'unknown',
-      row.wasSuccessful ? 'success' : 'fallback',
-      row.metadata?.platform || '',
-      row.metadata?.intentRule || '',
-      row.userMessage || '',
-      row.aiResponse || '',
+    const rows = topLearningRows.filter((row) => typeof row.metadata?.intentConfidence === 'number' && row.metadata.intentConfidence < LOW_CONFIDENCE_THRESHOLD);
+    if (!rows.length) return;
+    const header = ['when', 'customer', 'intent', 'intent_confidence', 'tone', 'outcome', 'status', 'platform', 'intent_rule', 'user_message', 'ai_response'];
+    const lines = rows.map((row) => [
+      new Date(row.createdAt).toISOString(), row.customer?.name || row.customer?.id || 'Unknown',
+      row.extractedIntent || 'unknown', typeof row.metadata?.intentConfidence === 'number' ? Math.round(row.metadata.intentConfidence * 100) : '',
+      row.detectedEmotionalTone || 'neutral', row.conversationOutcome || 'unknown', row.wasSuccessful ? 'success' : 'fallback',
+      row.metadata?.platform || '', row.metadata?.intentRule || '', row.userMessage || '', row.aiResponse || '',
     ]);
-
     const csv = [header, ...lines].map((cells) => cells.map(escapeCsv).join(',')).join('\n');
     const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
-    const ts = new Date().toISOString().replace(/[:.]/g, '-');
     anchor.href = url;
-    anchor.download = `low-confidence-learning-${ts}.csv`;
+    anchor.download = `low-confidence-learning-${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
     document.body.appendChild(anchor);
     anchor.click();
     document.body.removeChild(anchor);
@@ -247,23 +195,14 @@ const WhatsAppTab = () => {
   };
 
   useEffect(() => {
+    let active = true;
     async function loadStats() {
       setLoading(true);
       try {
         const [
-          totalCustomers,
-          inboundMessages,
-          outboundMessages,
-          bookingConversionRate,
-          peakHours,
-          peakDays,
-          sentimentData,
-          sentimentTrendData,
-          sentimentByTopicData,
-          extremeMessagesData,
-          keywordTrendsData,
-          agentAIPerformanceData,
-          recentLearningData,
+          totalCustomers, inboundMessages, outboundMessages, bookingConversionRate,
+          peakHours, peakDays, sentimentData, sentimentTrendData, sentimentByTopicData,
+          extremeMessagesData, keywordTrendsData, agentAIPerformanceData, recentLearningData,
         ] = await Promise.all([
           fetchTotalWhatsAppCustomers(),
           fetchTotalInboundWhatsAppMessages(),
@@ -279,15 +218,8 @@ const WhatsAppTab = () => {
           fetchWhatsAppAgentAIPerformance(),
           fetchRecentConversationLearning(20),
         ]);
-
-        setStats({
-          totalCustomers,
-          inboundMessages,
-          outboundMessages,
-          bookingConversionRate,
-          peakHours,
-          peakDays,
-        });
+        if (!active) return;
+        setStats({ totalCustomers, inboundMessages, outboundMessages, bookingConversionRate, peakHours, peakDays });
         setSentiment(sentimentData);
         setSentimentTrend(sentimentTrendData);
         setSentimentByTopic(sentimentByTopicData);
@@ -298,597 +230,271 @@ const WhatsAppTab = () => {
         setLearningRows(Array.isArray(learningPayload.items) ? learningPayload.items : []);
         setLearningSource(learningPayload.source || null);
       } catch (error) {
-        console.error("Error fetching analytics:", error);
+        console.error('Error fetching analytics:', error);
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
     }
     loadStats();
+    return () => { active = false; };
   }, []);
 
   if (loading) {
     return (
-      <div className="space-y-6 p-6">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          {[1, 2, 3, 4].map((i) => (
-            <Skeleton key={i} className="h-32 rounded-xl" />
-          ))}
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <Skeleton className="h-80 rounded-xl" />
-          <Skeleton className="h-80 rounded-xl" />
-        </div>
+      <div className="space-y-4 p-1">
+        <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">{[1, 2, 3, 4].map((item) => <Skeleton key={item} className="h-[68px] rounded-md" />)}</div>
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">{[1, 2, 3, 4].map((item) => <Skeleton key={item} className="h-[230px] rounded-md" />)}</div>
       </div>
     );
   }
 
   const metricCards = [
-    {
-      label: 'Total Customers',
-      value: stats.totalCustomers,
-      icon: Users,
-      color: 'text-blue-600 dark:text-blue-400',
-      bg: 'bg-blue-100 dark:bg-blue-900/30',
-    },
-    {
-      label: 'Inbound Msgs',
-      value: stats.inboundMessages,
-      icon: MessageSquare,
-      color: 'text-emerald-600 dark:text-emerald-400',
-      bg: 'bg-emerald-100 dark:bg-emerald-900/30',
-    },
-    {
-      label: 'Outbound Msgs',
-      value: stats.outboundMessages,
-      icon: Send,
-      color: 'text-purple-600 dark:text-purple-400',
-      bg: 'bg-purple-100 dark:bg-purple-900/30',
-    },
-    {
-      label: 'Conversion Rate',
-      value: `${(stats.bookingConversionRate * 100).toFixed(1)}%`,
-      icon: TrendingUp,
-      color: 'text-amber-600 dark:text-amber-400',
-      bg: 'bg-amber-100 dark:bg-amber-900/30',
-    },
+    { label: 'Customers', value: stats.totalCustomers, icon: Users },
+    { label: 'Inbound messages', value: stats.inboundMessages, icon: MessageSquare },
+    { label: 'Outbound messages', value: stats.outboundMessages, icon: Send },
+    { label: 'Booking conversion', value: `${(stats.bookingConversionRate * 100).toFixed(1)}%`, icon: TrendingUp },
   ];
+
+  const sentimentData = sentiment?.distribution
+    ? Object.entries(sentiment.distribution).map(([name, value]) => ({ name, value }))
+    : [];
+
+  const badgeTone = (tone: string) => {
+    if (tone === 'high') return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400';
+    if (tone === 'med') return 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400';
+    if (tone === 'low') return 'border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-400';
+    return 'border-border text-muted-foreground';
+  };
 
   return (
     <div className="space-y-4 p-1">
-      <div className="flex items-center justify-between mb-1">
+      <div className="flex flex-wrap items-end justify-between gap-2">
         <div>
-          <h2 className="text-xl font-bold text-foreground tracking-tight">WhatsApp Analytics</h2>
-          <p className="text-xs text-muted-foreground">Real-time insights into customer engagement and performance.</p>
+          <h2 className="text-lg font-semibold tracking-tight text-foreground">WhatsApp Analytics</h2>
+          <p className="text-xs text-muted-foreground">Customer engagement, sentiment and assistant performance</p>
         </div>
+        <span className="text-[11px] text-muted-foreground">WhatsApp channel</span>
       </div>
 
-      {/* Key Metrics */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-        {metricCards.map((card, idx) => (
-          <Card key={idx} className="border-none shadow-sm hover:shadow-md transition-shadow bg-card">
-            <CardContent className="p-4 flex items-center justify-between">
-              <div>
-                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{card.label}</p>
-                <p className="text-xl font-bold text-foreground mt-0.5">{card.value}</p>
-              </div>
-              <div className={`p-2 rounded-xl ${card.bg}`}>
-                <card.icon className={`w-4 h-4 ${card.color}`} />
-              </div>
-            </CardContent>
-          </Card>
+      {/* Compact KPI strip */}
+      <div className="grid grid-cols-2 divide-x divide-y divide-border rounded-md border border-border/70 bg-card sm:grid-cols-4 sm:divide-y-0">
+        {metricCards.map(({ label, value, icon: Icon }) => (
+          <div key={label} className="flex min-w-0 items-center gap-3 px-3 py-3">
+            <div className="hidden rounded-md bg-muted p-2 text-muted-foreground sm:block"><Icon className="h-4 w-4" /></div>
+            <div className="min-w-0">
+              <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
+              <p className="mt-0.5 text-xl font-semibold leading-none tabular-nums text-foreground">{typeof value === 'number' ? value.toLocaleString() : value}</p>
+            </div>
+          </div>
         ))}
       </div>
 
-      {/* Charts Row 1: Peak Times */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Card className="border-none shadow-sm">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-semibold flex items-center gap-2">
-              <Clock className="w-3.5 h-3.5 text-muted-foreground" /> Peak Chat Hours
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="h-[200px] w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={stats.peakHours}>
-                  <defs>
-                    <linearGradient id="colorCount" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor={COLORS.primary} stopOpacity={0.1} />
-                      <stop offset="95%" stopColor={COLORS.primary} stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                  <XAxis
-                    dataKey="hour"
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
-                    tickFormatter={(val) => `${val}:00`}
-                  />
-                  <YAxis
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
-                  />
-                  <Tooltip content={<CustomTooltip />} />
-                  <Area
-                    type="monotone"
-                    dataKey="count"
-                    stroke={COLORS.primary}
-                    strokeWidth={2}
-                    fillOpacity={1}
-                    fill="url(#colorCount)"
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="border-none shadow-sm">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-semibold flex items-center gap-2">
-              <Calendar className="w-3.5 h-3.5 text-muted-foreground" /> Peak Chat Days
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="h-[200px] w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={stats.peakDays}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                  <XAxis
-                    dataKey="day"
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
-                  />
-                  <YAxis
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
-                  />
-                  <Tooltip content={<CustomTooltip />} />
-                  <Bar
-                    dataKey="count"
-                    fill={COLORS.purple}
-                    radius={[4, 4, 0, 0]}
-                    barSize={32}
-                  />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </CardContent>
-        </Card>
+      {/* Activity patterns */}
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+        <Section title="Peak chat hours" icon={Clock}>
+          <div className="h-[190px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={stats.peakHours} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
+                <defs><linearGradient id="whatsapp-hour-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={COLORS.primary} stopOpacity={0.18} /><stop offset="95%" stopColor={COLORS.primary} stopOpacity={0} /></linearGradient></defs>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={chartGrid} />
+                <XAxis dataKey="hour" axisLine={false} tickLine={false} tick={chartAxis} tickFormatter={(value) => `${value}:00`} />
+                <YAxis axisLine={false} tickLine={false} tick={chartAxis} />
+                <Tooltip content={<CustomTooltip />} />
+                <Area type="monotone" dataKey="count" name="Messages" stroke={COLORS.primary} strokeWidth={2} fill="url(#whatsapp-hour-fill)" />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </Section>
+        <Section title="Peak chat days" icon={Calendar}>
+          <div className="h-[190px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={stats.peakDays} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={chartGrid} />
+                <XAxis dataKey="day" axisLine={false} tickLine={false} tick={chartAxis} />
+                <YAxis axisLine={false} tickLine={false} tick={chartAxis} />
+                <Tooltip content={<CustomTooltip />} />
+                <Bar dataKey="count" name="Messages" fill={COLORS.purple} radius={[3, 3, 0, 0]} maxBarSize={34} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </Section>
       </div>
 
-      {/* Charts Row 2: Sentiment & Trends */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Sentiment Distribution */}
-        <Card className="border-none shadow-sm lg:col-span-1">
-          <CardHeader>
-            <CardTitle className="text-base font-semibold flex items-center gap-2">
-              <Smile className="w-4 h-4 text-muted-foreground" /> Customer Sentiment
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="h-[250px] w-full relative">
-              {sentiment?.distribution ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={Object.entries(sentiment.distribution).map(([name, value]) => ({ name, value }))}
-                      cx="50%"
-                      cy="50%"
-                      innerRadius={60}
-                      outerRadius={80}
-                      paddingAngle={5}
-                      dataKey="value"
-                    >
-                      {Object.keys(sentiment.distribution).map((key, index) => (
-                        <Cell key={`cell-${index}`} fill={SENTIMENT_COLORS[key as keyof typeof SENTIMENT_COLORS]} />
-                      ))}
-                    </Pie>
-                    <Tooltip />
-                    <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ fontSize: '11px' }} />
-                  </PieChart>
-                </ResponsiveContainer>
-              ) : (
-                <div className="flex items-center justify-center h-full text-sm text-gray-400">No data</div>
-              )}
-              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <div className="text-center">
-                  <span className="text-2xl font-bold text-foreground">{sentiment?.total || 0}</span>
-                  <p className="text-[10px] text-muted-foreground uppercase">Analyzed</p>
-                </div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Sentiment Trend */}
-        <Card className="border-none shadow-sm lg:col-span-2">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-semibold flex items-center gap-2">
-              <Activity className="w-3.5 h-3.5 text-muted-foreground" /> Sentiment Trend
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="h-[200px] w-full">
+      {/* Sentiment */}
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+        <Section title="Customer sentiment" icon={Smile}>
+          <div className="relative h-[220px] w-full">
+            {sentimentData.length ? (
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={sentimentTrend} stackOffset="sign">
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                  <XAxis
-                    dataKey="date"
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
-                  />
-                  <YAxis
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
-                  />
-                  <Tooltip content={<CustomTooltip />} />
-                  <Legend iconType="circle" wrapperStyle={{ fontSize: '11px', paddingTop: '10px' }} />
-                  <Bar dataKey="positive" name="Positive" stackId="a" fill={SENTIMENT_COLORS.positive} radius={[0, 0, 4, 4]} />
-                  <Bar dataKey="neutral" name="Neutral" stackId="a" fill={SENTIMENT_COLORS.neutral} />
-                  <Bar dataKey="negative" name="Negative" stackId="a" fill={SENTIMENT_COLORS.negative} radius={[4, 4, 0, 0]} />
-                </BarChart>
+                <PieChart>
+                  <Pie data={sentimentData} cx="50%" cy="46%" innerRadius={52} outerRadius={72} paddingAngle={3} dataKey="value">
+                    {sentimentData.map((entry, index) => <Cell key={`${entry.name}-${index}`} fill={SENTIMENT_COLORS[entry.name as keyof typeof SENTIMENT_COLORS] || COLORS.slate} />)}
+                  </Pie>
+                  <Tooltip />
+                  <Legend verticalAlign="bottom" height={28} iconType="circle" wrapperStyle={{ fontSize: '10px' }} />
+                </PieChart>
               </ResponsiveContainer>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Row 3: Topics & Keywords */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Card className="border-none shadow-sm">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-semibold flex items-center gap-2">
-              <MessageCircle className="w-3.5 h-3.5 text-muted-foreground" /> Sentiment by Topic
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="h-[240px] w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={sentimentByTopic} layout="vertical" margin={{ left: 20 }}>
-                  <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
-                  <XAxis type="number" hide />
-                  <YAxis
-                    dataKey="topic"
-                    type="category"
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
-                    width={100}
-                  />
-                  <Tooltip content={<CustomTooltip />} />
-                  <Legend iconType="circle" wrapperStyle={{ fontSize: '11px' }} />
-                  <Bar dataKey="positive" stackId="a" fill={SENTIMENT_COLORS.positive} barSize={20} radius={[0, 4, 4, 0]} />
-                  <Bar dataKey="neutral" stackId="a" fill={SENTIMENT_COLORS.neutral} barSize={20} />
-                  <Bar dataKey="negative" stackId="a" fill={SENTIMENT_COLORS.negative} barSize={20} radius={[4, 0, 0, 4]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="border-none shadow-sm">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-semibold flex items-center gap-2">
-              <TrendingUp className="w-3.5 h-3.5 text-muted-foreground" /> Trending Keywords
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="h-[240px] w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={keywordTrends?.slice(0, 10)}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                  <XAxis
-                    dataKey="keyword"
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
-                  />
-                  <YAxis
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
-                  />
-                  <Tooltip content={<CustomTooltip />} />
-                  <Bar
-                    dataKey="count"
-                    fill={COLORS.teal}
-                    radius={[4, 4, 0, 0]}
-                    barSize={32}
-                  />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Row 4: Agent vs AI */}
-      {
-        agentAIPerformance && (
-          <Card className="border-none shadow-sm">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-semibold flex items-center gap-2">
-                <Bot className="w-3.5 h-3.5 text-muted-foreground" /> Agent vs AI Performance
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm text-left">
-                  <thead className="text-xs text-muted-foreground uppercase bg-muted/50">
-                    <tr>
-                      <th className="px-6 py-3 font-medium">Metric</th>
-                      <th className="px-6 py-3 font-medium text-center">Human Agent</th>
-                      <th className="px-6 py-3 font-medium text-center">AI Assistant</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border">
-                    <tr className="bg-card hover:bg-muted/50 transition-colors">
-                      <td className="px-6 py-4 font-medium text-foreground">Messages Handled</td>
-                      <td className="px-6 py-4 text-center text-muted-foreground">{agentAIPerformance.agent.count}</td>
-                      <td className="px-6 py-4 text-center text-muted-foreground">{agentAIPerformance.ai.count}</td>
-                    </tr>
-                    <tr className="bg-card hover:bg-muted/50 transition-colors">
-                      <td className="px-6 py-4 font-medium text-foreground">Resolution Rate</td>
-                      <td className="px-6 py-4 text-center">
-                        <Badge variant="outline" className="bg-blue-500/10 text-blue-500 border-blue-500/20">
-                          {agentAIPerformance.agent.resolutionRate}%
-                        </Badge>
-                      </td>
-                      <td className="px-6 py-4 text-center">
-                        <Badge variant="outline" className="bg-purple-500/10 text-purple-500 border-purple-500/20">
-                          {agentAIPerformance.ai.resolutionRate}%
-                        </Badge>
-                      </td>
-                    </tr>
-                    <tr className="bg-card hover:bg-muted/50 transition-colors">
-                      <td className="px-6 py-4 font-medium text-foreground">Avg. Sentiment</td>
-                      <td className="px-6 py-4 text-center">
-                        <div className="flex items-center justify-center gap-2">
-                          <div className="w-20 h-2 bg-muted rounded-full overflow-hidden">
-                            <div
-                              className="h-full bg-green-500"
-                              style={{ width: `${agentAIPerformance.agent.sentiment.positive}%` }}
-                            />
-                          </div>
-                          <span className="text-xs text-muted-foreground">{agentAIPerformance.agent.sentiment.positive}%</span>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 text-center">
-                        <div className="flex items-center justify-center gap-2">
-                          <div className="w-20 h-2 bg-muted rounded-full overflow-hidden">
-                            <div
-                              className="h-full bg-green-500"
-                              style={{ width: `${agentAIPerformance.ai.sentiment.positive}%` }}
-                            />
-                          </div>
-                          <span className="text-xs text-muted-foreground">{agentAIPerformance.ai.sentiment.positive}%</span>
-                        </div>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </CardContent>
-          </Card>
-        )
-      }
-
-      {/* Row 5: Extreme Messages */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <Card className="border-none shadow-sm">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-semibold text-emerald-700 flex items-center gap-2">
-              <Smile className="w-3.5 h-3.5" /> Top Positive Feedback
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              {extremeMessages.mostPositive?.slice(0, 3).map((msg: any, idx: number) => (
-                <div key={idx} className="p-3 bg-emerald-500/10 rounded-lg border border-emerald-500/20 text-sm">
-                  <p className="text-foreground italic">"{msg.content}"</p>
-                  <div className="flex items-center justify-between mt-2">
-                    <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">Score: {msg.score}</span>
-                    <span className="text-[10px] text-muted-foreground">{new Date(msg.createdAt).toLocaleDateString()}</span>
-                  </div>
-                </div>
-              ))}
-              {!extremeMessages.mostPositive?.length && <p className="text-sm text-muted-foreground">No data available</p>}
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="border-none shadow-sm">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-semibold text-rose-700 flex items-center gap-2">
-              <Activity className="w-3.5 h-3.5" /> Critical Feedback
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              {extremeMessages.mostNegative?.slice(0, 3).map((msg: any, idx: number) => (
-                <div key={idx} className="p-3 bg-rose-500/10 rounded-lg border border-rose-500/20 text-sm">
-                  <p className="text-foreground italic">"{msg.content}"</p>
-                  <div className="flex items-center justify-between mt-2">
-                    <span className="text-[10px] text-rose-600 dark:text-rose-400 font-medium">Score: {msg.score}</span>
-                    <span className="text-[10px] text-muted-foreground">{new Date(msg.createdAt).toLocaleDateString()}</span>
-                  </div>
-                </div>
-              ))}
-              {!extremeMessages.mostNegative?.length && <p className="text-sm text-muted-foreground">No data available</p>}
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Row 6: Recent AI Learning */}
-      <Card className="border-none shadow-sm">
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between gap-3">
-            <CardTitle className="text-sm font-semibold flex items-center gap-2">
-              <Bot className="w-3.5 h-3.5 text-muted-foreground" /> Recent AI Learning
-            </CardTitle>
-            <div className="flex items-center gap-2">
-              <Badge variant="outline" className="text-[10px]">
-                Low (&lt;{Math.round(LOW_CONFIDENCE_THRESHOLD * 100)}%): {lowConfidenceCount}
-              </Badge>
-              <Badge variant="outline" className="text-[10px]">
-                Likely incorrect: {likelyIncorrectCount}
-              </Badge>
-              <button
-                type="button"
-                onClick={exportLowConfidenceCsv}
-                disabled={lowConfidenceCount === 0}
-                className="text-[11px] px-2 py-1 rounded-md border transition-colors bg-transparent text-muted-foreground border-border hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
-                title="Export low-confidence rows to CSV"
-              >
-                Export low confidence CSV
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowLowConfidenceOnly((prev) => !prev)}
-                className={`text-[11px] px-2 py-1 rounded-md border transition-colors ${showLowConfidenceOnly
-                  ? 'bg-amber-500/10 text-amber-700 border-amber-500/30 dark:text-amber-400'
-                  : 'bg-transparent text-muted-foreground border-border hover:bg-muted'}`}
-              >
-                {showLowConfidenceOnly ? 'Showing low confidence' : 'Show low confidence only'}
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowLikelyIncorrectOnly((prev) => !prev)}
-                className={`text-[11px] px-2 py-1 rounded-md border transition-colors ${showLikelyIncorrectOnly
-                  ? 'bg-rose-500/10 text-rose-700 border-rose-500/30 dark:text-rose-400'
-                  : 'bg-transparent text-muted-foreground border-border hover:bg-muted'}`}
-              >
-                {showLikelyIncorrectOnly ? 'Showing likely incorrect' : 'Show likely incorrect only'}
-              </button>
+            ) : <div className="flex h-full items-center justify-center text-xs text-muted-foreground">No sentiment data</div>}
+            <div className="pointer-events-none absolute inset-x-0 top-[72px] text-center">
+              <p className="text-2xl font-semibold tabular-nums text-foreground">{sentiment?.total || 0}</p>
+              <p className="text-[9px] uppercase tracking-wide text-muted-foreground">Analysed</p>
             </div>
           </div>
-          {learningSource === 'derived_from_messages' && (
-            <p className="text-[11px] text-amber-600 dark:text-amber-400">
-              Showing derived rows from message history until live ConversationLearning rows accumulate.
-            </p>
-          )}
-        </CardHeader>
-        <CardContent>
-          {learningRows.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No conversation learning rows yet. Send a few AI-handled messages, then refresh this page.</p>
-          ) : visibleLearningRows.length === 0 && (showLowConfidenceOnly || showLikelyIncorrectOnly) ? (
-            <p className="text-sm text-muted-foreground">No rows match your current triage filters in the latest 20 conversations.</p>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs text-left">
-                <thead className="text-[11px] text-muted-foreground uppercase bg-muted/50">
-                  <tr>
-                    <th className="px-3 py-2 font-medium">When</th>
-                    <th className="px-3 py-2 font-medium">Customer</th>
-                    <th className="px-3 py-2 font-medium">Intent</th>
-                    <th className="px-3 py-2 font-medium">Conf</th>
-                    <th className="px-3 py-2 font-medium">Risk</th>
-                    <th className="px-3 py-2 font-medium">Tone</th>
-                    <th className="px-3 py-2 font-medium">Outcome</th>
-                    <th className="px-3 py-2 font-medium">Status</th>
-                    <th className="px-3 py-2 font-medium">QA</th>
-                    <th className="px-3 py-2 font-medium">User Message</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {visibleLearningRows.map((row) => (
-                    <tr key={row.id} className="bg-card hover:bg-muted/50 transition-colors align-top">
-                      <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">
-                        {new Date(row.createdAt).toLocaleString()}
-                      </td>
-                      <td className="px-3 py-2 text-foreground whitespace-nowrap">
-                        {row.customer?.name || row.customer?.id || 'Unknown'}
-                      </td>
-                      <td className="px-3 py-2">
-                        <Badge variant="outline" className="text-[10px]">
-                          {row.extractedIntent || 'unknown'}
-                        </Badge>
-                      </td>
-                      <td className="px-3 py-2 whitespace-nowrap">
-                        <Badge
-                          variant="outline"
-                          className={
-                            confidenceLabel(row.metadata?.intentConfidence) === 'high'
-                              ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20'
-                              : confidenceLabel(row.metadata?.intentConfidence) === 'med'
-                                ? 'bg-amber-500/10 text-amber-600 border-amber-500/20'
-                                : 'bg-rose-500/10 text-rose-600 border-rose-500/20'
-                          }
-                          title={typeof row.metadata?.intentConfidence === 'number' ? `rule: ${row.metadata?.intentRule || 'n/a'}` : 'n/a'}
-                        >
-                          {typeof row.metadata?.intentConfidence === 'number'
-                            ? `${Math.round(row.metadata.intentConfidence * 100)}%`
-                            : 'n/a'}
-                        </Badge>
-                      </td>
-                      <td className="px-3 py-2 whitespace-nowrap">
-                        <Badge
-                          variant="outline"
-                          className={
-                            riskLabel(row.metadata?.likelyIncorrectScore) === 'high'
-                              ? 'bg-rose-500/10 text-rose-600 border-rose-500/20'
-                              : riskLabel(row.metadata?.likelyIncorrectScore) === 'med'
-                                ? 'bg-amber-500/10 text-amber-600 border-amber-500/20'
-                                : 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20'
-                          }
-                          title={Array.isArray(row.metadata?.likelyIncorrectReasons) ? row.metadata?.likelyIncorrectReasons.join(', ') : 'n/a'}
-                        >
-                          {typeof row.metadata?.likelyIncorrectScore === 'number'
-                            ? `${Math.round(row.metadata.likelyIncorrectScore * 100)}%`
-                            : 'n/a'}
-                        </Badge>
-                      </td>
-                      <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">
-                        {row.detectedEmotionalTone || 'neutral'}
-                      </td>
-                      <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">
-                        {row.conversationOutcome || 'unknown'}
-                      </td>
-                      <td className="px-3 py-2 whitespace-nowrap">
-                        <Badge
-                          variant="outline"
-                          className={row.wasSuccessful ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20' : 'bg-rose-500/10 text-rose-600 border-rose-500/20'}
-                        >
-                          {row.wasSuccessful ? 'success' : 'fallback'}
-                        </Badge>
-                      </td>
-                      <td className="px-3 py-2 whitespace-nowrap">
-                        <div className="flex items-center gap-1">
-                          {(['correct', 'partially_correct', 'incorrect', 'unsafe'] as const).map((label) => (
-                            <button
-                              key={label}
-                              type="button"
-                              disabled={qaUpdating[row.id] === true}
-                              onClick={() => setQaLabel(row.id, label)}
-                              className={`text-[10px] px-2 py-1 rounded border transition-colors ${row.metadata?.qaLabel === label
-                                ? 'bg-blue-500/10 text-blue-700 border-blue-500/30 dark:text-blue-400'
-                                : 'bg-transparent text-muted-foreground border-border hover:bg-muted'} disabled:opacity-60 disabled:cursor-not-allowed`}
-                            >
-                              {label === 'partially_correct' ? 'partial' : label}
-                            </button>
-                          ))}
-                        </div>
-                      </td>
-                      <td className="px-3 py-2 text-muted-foreground max-w-[360px] truncate" title={row.userMessage}>
-                        {row.userMessage}
-                      </td>
+        </Section>
+        <Section title="Sentiment trend" icon={Activity} className="lg:col-span-2">
+          <div className="h-[220px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={sentimentTrend} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={chartGrid} />
+                <XAxis dataKey="date" axisLine={false} tickLine={false} tick={chartAxis} />
+                <YAxis axisLine={false} tickLine={false} tick={chartAxis} />
+                <Tooltip content={<CustomTooltip />} />
+                <Legend iconType="circle" wrapperStyle={{ fontSize: '10px' }} />
+                <Bar dataKey="positive" name="Positive" stackId="sentiment" fill={SENTIMENT_COLORS.positive} />
+                <Bar dataKey="neutral" name="Neutral" stackId="sentiment" fill={SENTIMENT_COLORS.neutral} />
+                <Bar dataKey="negative" name="Negative" stackId="sentiment" fill={SENTIMENT_COLORS.negative} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </Section>
+      </div>
+
+      {/* Topics and keywords */}
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+        <Section title="Sentiment by topic" icon={MessageCircle}>
+          <div className="h-[225px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={sentimentByTopic} layout="vertical" margin={{ top: 4, right: 8, left: 4, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke={chartGrid} />
+                <XAxis type="number" hide />
+                <YAxis dataKey="topic" type="category" axisLine={false} tickLine={false} tick={chartAxis} width={96} />
+                <Tooltip content={<CustomTooltip />} />
+                <Legend iconType="circle" wrapperStyle={{ fontSize: '10px' }} />
+                <Bar dataKey="positive" name="Positive" stackId="topic" fill={SENTIMENT_COLORS.positive} barSize={17} />
+                <Bar dataKey="neutral" name="Neutral" stackId="topic" fill={SENTIMENT_COLORS.neutral} barSize={17} />
+                <Bar dataKey="negative" name="Negative" stackId="topic" fill={SENTIMENT_COLORS.negative} barSize={17} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </Section>
+        <Section title="Trending keywords" icon={TrendingUp}>
+          <div className="h-[225px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={keywordTrends?.slice(0, 10)} margin={{ top: 4, right: 8, left: -18, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={chartGrid} />
+                <XAxis dataKey="keyword" axisLine={false} tickLine={false} tick={chartAxis} interval={0} angle={-18} textAnchor="end" height={48} />
+                <YAxis axisLine={false} tickLine={false} tick={chartAxis} />
+                <Tooltip content={<CustomTooltip />} />
+                <Bar dataKey="count" name="Mentions" fill={COLORS.teal} radius={[3, 3, 0, 0]} maxBarSize={30} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </Section>
+      </div>
+
+      {/* Agent and AI comparison */}
+      {agentAIPerformance && (
+        <Section title="Human agent vs AI assistant" icon={Bot}>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[520px] text-xs">
+              <thead><tr className="border-b border-border text-[10px] uppercase tracking-wide text-muted-foreground">
+                <th className="py-2 pr-3 text-left font-medium">Metric</th>
+                <th className="px-3 py-2 text-center font-medium">Human agent</th>
+                <th className="px-3 py-2 text-center font-medium">AI assistant</th>
+              </tr></thead>
+              <tbody className="divide-y divide-border/70">
+                <tr><td className="py-2.5 pr-3 font-medium text-foreground">Messages handled</td><td className="px-3 py-2.5 text-center tabular-nums">{agentAIPerformance.agent.count}</td><td className="px-3 py-2.5 text-center tabular-nums">{agentAIPerformance.ai.count}</td></tr>
+                <tr><td className="py-2.5 pr-3 font-medium text-foreground">Resolution rate</td><td className="px-3 py-2.5 text-center"><Badge variant="outline" className="text-[10px]">{agentAIPerformance.agent.resolutionRate}%</Badge></td><td className="px-3 py-2.5 text-center"><Badge variant="outline" className="text-[10px]">{agentAIPerformance.ai.resolutionRate}%</Badge></td></tr>
+                <tr><td className="py-2.5 pr-3 font-medium text-foreground">Positive sentiment</td>
+                  {[agentAIPerformance.agent, agentAIPerformance.ai].map((item, index) => <td key={index} className="px-3 py-2.5"><div className="mx-auto flex max-w-[150px] items-center gap-2"><div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-emerald-500" style={{ width: `${item.sentiment.positive}%` }} /></div><span className="w-9 text-right tabular-nums text-muted-foreground">{item.sentiment.positive}%</span></div></td>)}
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </Section>
+      )}
+
+      {/* Feedback excerpts */}
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+        <Section title="Positive feedback" icon={Smile}>
+          <div className="space-y-2">
+            {extremeMessages.mostPositive?.slice(0, 3).map((message: any, index: number) => (
+              <div key={message.id || index} className="border-b border-border/70 pb-2 last:border-0 last:pb-0">
+                <p className="text-xs leading-relaxed text-foreground">“{message.content}”</p>
+                <div className="mt-1 flex items-center justify-between text-[10px] text-muted-foreground"><span>Score: {message.score}</span><span>{new Date(message.createdAt).toLocaleDateString()}</span></div>
+              </div>
+            ))}
+            {!extremeMessages.mostPositive?.length && <p className="py-3 text-xs text-muted-foreground">No positive feedback available</p>}
+          </div>
+        </Section>
+        <Section title="Critical feedback" icon={Activity}>
+          <div className="space-y-2">
+            {extremeMessages.mostNegative?.slice(0, 3).map((message: any, index: number) => (
+              <div key={message.id || index} className="border-b border-border/70 pb-2 last:border-0 last:pb-0">
+                <p className="text-xs leading-relaxed text-foreground">“{message.content}”</p>
+                <div className="mt-1 flex items-center justify-between text-[10px] text-muted-foreground"><span>Score: {message.score}</span><span>{new Date(message.createdAt).toLocaleDateString()}</span></div>
+              </div>
+            ))}
+            {!extremeMessages.mostNegative?.length && <p className="py-3 text-xs text-muted-foreground">No critical feedback available</p>}
+          </div>
+        </Section>
+      </div>
+
+      {/* Conversation learning and QA */}
+      <Section
+        title="Recent AI learning"
+        icon={Bot}
+        action={<div className="flex flex-wrap items-center justify-end gap-1.5">
+          <Badge variant="outline" className="text-[10px]">Low confidence: {lowConfidenceCount}</Badge>
+          <Badge variant="outline" className="text-[10px]">Likely incorrect: {likelyIncorrectCount}</Badge>
+          <button type="button" onClick={exportLowConfidenceCsv} disabled={lowConfidenceCount === 0} className="rounded border border-border px-2 py-1 text-[10px] text-muted-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40">Export CSV</button>
+        </div>}
+      >
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap gap-1.5">
+            <button type="button" onClick={() => setShowLowConfidenceOnly((previous) => !previous)} className={`rounded border px-2 py-1 text-[10px] transition-colors ${showLowConfidenceOnly ? 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400' : 'border-border text-muted-foreground hover:bg-muted'}`}>{showLowConfidenceOnly ? 'Low confidence only ✓' : 'Filter low confidence'}</button>
+            <button type="button" onClick={() => setShowLikelyIncorrectOnly((previous) => !previous)} className={`rounded border px-2 py-1 text-[10px] transition-colors ${showLikelyIncorrectOnly ? 'border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-400' : 'border-border text-muted-foreground hover:bg-muted'}`}>{showLikelyIncorrectOnly ? 'Likely incorrect only ✓' : 'Filter likely incorrect'}</button>
+          </div>
+          <span className="text-[10px] text-muted-foreground">Latest {topLearningRows.length} conversations</span>
+        </div>
+        {learningSource === 'derived_from_messages' && <p className="mb-3 rounded border border-amber-500/20 bg-amber-500/5 px-2.5 py-2 text-[11px] text-amber-700 dark:text-amber-400">Showing derived rows from message history until live ConversationLearning rows accumulate.</p>}
+        {learningRows.length === 0 ? (
+          <p className="py-5 text-center text-xs text-muted-foreground">No conversation learning rows yet. Send a few AI-handled messages, then refresh this page.</p>
+        ) : visibleLearningRows.length === 0 ? (
+          <p className="py-5 text-center text-xs text-muted-foreground">No rows match the selected filters in the latest 20 conversations.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[1050px] text-[11px]">
+              <thead><tr className="border-b border-border bg-muted/40 text-[10px] uppercase tracking-wide text-muted-foreground">
+                <th className="px-2 py-2 text-left font-medium">When</th><th className="px-2 py-2 text-left font-medium">Customer</th><th className="px-2 py-2 text-left font-medium">Intent</th><th className="px-2 py-2 text-left font-medium">Conf.</th><th className="px-2 py-2 text-left font-medium">Risk</th><th className="px-2 py-2 text-left font-medium">Tone</th><th className="px-2 py-2 text-left font-medium">Outcome</th><th className="px-2 py-2 text-left font-medium">Status</th><th className="px-2 py-2 text-left font-medium">QA review</th><th className="px-2 py-2 text-left font-medium">User message</th>
+              </tr></thead>
+              <tbody className="divide-y divide-border/70">
+                {visibleLearningRows.map((row) => {
+                  const confidence = confidenceLabel(row.metadata?.intentConfidence);
+                  const risk = riskLabel(row.metadata?.likelyIncorrectScore);
+                  return (
+                    <tr key={row.id} className="align-top transition-colors hover:bg-muted/30">
+                      <td className="whitespace-nowrap px-2 py-2 text-muted-foreground">{new Date(row.createdAt).toLocaleString()}</td>
+                      <td className="max-w-[130px] truncate px-2 py-2 text-foreground" title={row.customer?.name || row.customer?.id || 'Unknown'}>{row.customer?.name || row.customer?.id || 'Unknown'}</td>
+                      <td className="px-2 py-2"><Badge variant="outline" className="max-w-[130px] truncate text-[10px]">{row.extractedIntent || 'unknown'}</Badge></td>
+                      <td className="px-2 py-2"><Badge variant="outline" className={`text-[10px] ${badgeTone(confidence)}`} title={`Rule: ${row.metadata?.intentRule || 'n/a'}`}>{typeof row.metadata?.intentConfidence === 'number' ? `${Math.round(row.metadata.intentConfidence * 100)}%` : 'n/a'}</Badge></td>
+                      <td className="px-2 py-2"><Badge variant="outline" className={`text-[10px] ${risk === 'n/a' ? '' : badgeTone(risk)}`} title={row.metadata?.likelyIncorrectReasons?.join(', ') || 'n/a'}>{typeof row.metadata?.likelyIncorrectScore === 'number' ? `${Math.round(row.metadata.likelyIncorrectScore * 100)}%` : 'n/a'}</Badge></td>
+                      <td className="whitespace-nowrap px-2 py-2 text-muted-foreground">{row.detectedEmotionalTone || 'neutral'}</td>
+                      <td className="whitespace-nowrap px-2 py-2 text-muted-foreground">{row.conversationOutcome || 'unknown'}</td>
+                      <td className="px-2 py-2"><Badge variant="outline" className={`text-[10px] ${row.wasSuccessful ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400' : 'border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-400'}`}>{row.wasSuccessful ? 'Success' : 'Fallback'}</Badge></td>
+                      <td className="px-2 py-2"><div className="flex min-w-[250px] flex-wrap gap-1">{(['correct', 'partially_correct', 'incorrect', 'unsafe'] as const).map((label) => (
+                        <button key={label} type="button" disabled={qaUpdating[row.id] === true} onClick={() => setQaLabel(row.id, label)} className={`rounded border px-1.5 py-1 text-[9px] transition-colors ${row.metadata?.qaLabel === label ? 'border-primary/40 bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:bg-muted'} disabled:cursor-not-allowed disabled:opacity-50`}>{label === 'partially_correct' ? 'Partial' : label}</button>
+                      ))}</div></td>
+                      <td className="max-w-[280px] truncate px-2 py-2 text-muted-foreground" title={row.userMessage}>{row.userMessage}</td>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-    </div >
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Section>
+    </div>
   );
 };
 

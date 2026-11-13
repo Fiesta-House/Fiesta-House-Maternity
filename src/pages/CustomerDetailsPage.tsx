@@ -1,9 +1,19 @@
 import React, { useMemo, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { getCustomer, getCustomerMessages, toggleCustomerAi, getCustomerPhotoLinks, getCustomerSessionNotes, updateSessionNote, getCustomerSentiment, getAverageActivity, SessionNote } from '../api/customers';
+import {
+  getCustomer,
+  getCustomerMessages,
+  toggleCustomerAi,
+  getCustomerPhotoLinks,
+  getCustomerSessionNotes,
+  updateSessionNote,
+  getCustomerSentiment,
+  getAverageActivity,
+  SessionNote,
+} from '../api/customers';
 import { getCustomerBookings } from '../api/bookings';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
@@ -18,13 +28,11 @@ import {
 } from '@/components/ui/dialog';
 import {
   ArrowLeft,
-  User,
   Phone,
   Mail,
   Calendar,
   MessageSquare,
   Activity,
-  BarChart3,
   Clock,
   Power,
   CalendarCheck,
@@ -35,12 +43,31 @@ import {
   CheckCircle2,
   Smile,
 } from 'lucide-react';
-import { format, formatDistanceToNow, isToday, isYesterday } from 'date-fns';
+import { format, formatDistanceToNow, isToday, isYesterday, isValid } from 'date-fns';
 import { toast } from 'sonner';
 import SendPhotoLinkCard from '../components/ui/SendPhotoLinkCard';
 import InvoiceCard from '../components/InvoiceCard';
 import { invoicesApi } from '../api/invoices';
 import { useAuth } from '@/hooks/useAuth';
+
+type NoteFilter = 'all' | 'pending' | 'approved' | 'reviewed' | 'declined';
+type NoteAction = 'review' | 'approve' | null;
+
+const toValidDate = (value?: string | Date | null): Date | null => {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return isValid(date) ? date : null;
+};
+
+const displayDate = (value?: string | Date | null, pattern = 'MMM d, yyyy • h:mm a') => {
+  const date = toValidDate(value);
+  return date ? format(date, pattern) : '—';
+};
+
+const displayRelativeDate = (value?: string | Date | null) => {
+  const date = toValidDate(value);
+  return date ? formatDistanceToNow(date, { addSuffix: true }) : 'Unknown';
+};
 
 const CustomerDetailsPage = () => {
   const { customerId } = useParams<{ customerId: string }>();
@@ -49,8 +76,9 @@ const CustomerDetailsPage = () => {
 
   const [reviewingNoteId, setReviewingNoteId] = useState<string | null>(null);
   const [reviewNotesText, setReviewNotesText] = useState('');
-  const [noteAction, setNoteAction] = useState<'review' | 'approve' | null>(null);
-  const [sessionNoteFilter, setSessionNoteFilter] = useState<'all' | 'pending' | 'approved' | 'reviewed' | 'declined'>('pending');
+  const [noteAction, setNoteAction] = useState<NoteAction>(null);
+  const [sessionNoteFilter, setSessionNoteFilter] = useState<NoteFilter>('pending');
+  const [isTogglingAi, setIsTogglingAi] = useState(false);
 
   const { data: customer, isLoading: customerLoading, refetch: refetchCustomer } = useQuery({
     queryKey: ['customer', customerId],
@@ -88,9 +116,6 @@ const CustomerDetailsPage = () => {
     enabled: !!customerId,
   });
 
-  // This customer's own sentiment history, and real business-wide averages to
-  // compare their activity against (replacing the old business-wide stats that
-  // were shown here regardless of which customer's page you were on).
   const { data: sentimentHistory } = useQuery({
     queryKey: ['customer-sentiment', customerId],
     queryFn: () => getCustomerSentiment(customerId!),
@@ -103,30 +128,30 @@ const CustomerDetailsPage = () => {
   });
 
   const handleToggleAi = async () => {
-    if (!customer) return;
+    if (!customer || isTogglingAi) return;
+    setIsTogglingAi(true);
     try {
       await toggleCustomerAi(customer.id, !customer.aiEnabled);
       toast.success(`AI ${!customer.aiEnabled ? 'enabled' : 'disabled'} for this customer`);
-      refetchCustomer();
-    } catch (error) {
+      await refetchCustomer();
+    } catch {
       toast.error('Failed to toggle AI status');
+    } finally {
+      setIsTogglingAi(false);
     }
   };
 
-  const inboundMessages = messages?.filter((m) => m.direction === 'inbound') || [];
-  const outboundMessages = messages?.filter((m) => m.direction === 'outbound') || [];
+  const inboundMessages = messages?.filter((message) => message.direction === 'inbound') || [];
+  const outboundMessages = messages?.filter((message) => message.direction === 'outbound') || [];
   const lastMessage = messages?.[messages.length - 1];
-  const pendingSessionNotesCount = sessionNotes?.filter((n) => n.status === 'pending').length || 0;
+  const pendingSessionNotesCount = sessionNotes?.filter((note) => note.status === 'pending').length || 0;
 
   const inferredPlatform = useMemo(() => {
     if (!customer) return 'other';
-    if (customer.platform) return customer.platform;
-    if (customer.whatsappId) return 'whatsapp';
-    if (customer.instagramId) return 'instagram';
-    if (customer.messengerId) return 'messenger';
-    if (customer.email?.endsWith('@whatsapp.local')) return 'whatsapp';
-    if (customer.email?.endsWith('@instagram.local')) return 'instagram';
-    if (customer.email?.endsWith('@messenger.local')) return 'messenger';
+    if (customer.platform) return customer.platform.toLowerCase();
+    if (customer.whatsappId || customer.email?.endsWith('@whatsapp.local')) return 'whatsapp';
+    if (customer.instagramId || customer.email?.endsWith('@instagram.local')) return 'instagram';
+    if (customer.messengerId || customer.email?.endsWith('@messenger.local')) return 'messenger';
     return 'other';
   }, [customer]);
 
@@ -139,33 +164,34 @@ const CustomerDetailsPage = () => {
   }, [customer, inferredPlatform]);
 
   const conversationTimeline = useMemo(() => {
-    const list = [...(messages || [])].sort(
-      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-    );
+    const list = [...(messages || [])].sort((a, b) => {
+      const aTime = toValidDate(a.createdAt)?.getTime() ?? 0;
+      const bTime = toValidDate(b.createdAt)?.getTime() ?? 0;
+      return aTime - bTime;
+    });
 
     const items: Array<
       | { kind: 'day'; key: string; label: string }
-      | { kind: 'message'; key: string; message: typeof list[number] }
+      | { kind: 'message'; key: string; message: (typeof list)[number] }
     > = [];
 
     let lastDayKey = '';
     for (const message of list) {
-      const dt = new Date(message.createdAt);
-      const dayKey = format(dt, 'yyyy-MM-dd');
-
+      const date = toValidDate(message.createdAt);
+      const dayKey = date ? format(date, 'yyyy-MM-dd') : `unknown-${message.id}`;
       if (dayKey !== lastDayKey) {
-        const label = isToday(dt)
-          ? 'Today'
-          : isYesterday(dt)
-            ? 'Yesterday'
-            : format(dt, 'EEEE, MMM d, yyyy');
+        const label = !date
+          ? 'Date unavailable'
+          : isToday(date)
+            ? 'Today'
+            : isYesterday(date)
+              ? 'Yesterday'
+              : format(date, 'EEEE, MMM d, yyyy');
         items.push({ kind: 'day', key: `day-${dayKey}`, label });
         lastDayKey = dayKey;
       }
-
       items.push({ kind: 'message', key: message.id, message });
     }
-
     return items;
   }, [messages]);
 
@@ -176,12 +202,12 @@ const CustomerDetailsPage = () => {
       : list.filter((note) => note.status === sessionNoteFilter);
 
     return [...filtered].sort((a, b) => {
-      const priorityRank = { urgent: 0, high: 1, normal: 2 };
+      const priorityRank: Record<string, number> = { urgent: 0, high: 1, normal: 2 };
       const priorityDifference = (priorityRank[a.priority] ?? 2) - (priorityRank[b.priority] ?? 2);
       if (priorityDifference !== 0) return priorityDifference;
       if (a.status === 'pending' && b.status !== 'pending') return -1;
       if (a.status !== 'pending' && b.status === 'pending') return 1;
-      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      return (toValidDate(b.createdAt)?.getTime() ?? 0) - (toValidDate(a.createdAt)?.getTime() ?? 0);
     });
   }, [sessionNotes, sessionNoteFilter]);
 
@@ -215,17 +241,10 @@ const CustomerDetailsPage = () => {
       const methodMatch = detailsText.match(/delivery preference:\s*([^|]+)/i);
       const emailMatch = detailsText.match(/email:\s*([^|]+)/i);
       const whatsappMatch = detailsText.match(/whatsapp:\s*([^|]+)/i);
-
       const method = methodMatch?.[1]?.trim()?.toLowerCase();
-      if (method === 'email') {
-        return `Request: Photo delivery via email${emailMatch?.[1] ? ` (${emailMatch[1].trim()})` : ''}`;
-      }
-      if (method === 'whatsapp') {
-        return `Request: Photo delivery via WhatsApp${whatsappMatch?.[1] ? ` (${whatsappMatch[1].trim()})` : ''}`;
-      }
-      if (method === 'download_link') {
-        return 'Request: Photo delivery via secure download link';
-      }
+      if (method === 'email') return `Request: Photo delivery via email${emailMatch?.[1] ? ` (${emailMatch[1].trim()})` : ''}`;
+      if (method === 'whatsapp') return `Request: Photo delivery via WhatsApp${whatsappMatch?.[1] ? ` (${whatsappMatch[1].trim()})` : ''}`;
+      if (method === 'download_link') return 'Request: Photo delivery via secure download link';
     }
 
     if (note.type === 'external_people') return `People: ${itemsText || detailsText || 'No details provided'}`;
@@ -235,812 +254,430 @@ const CustomerDetailsPage = () => {
     return `Note: ${detailsText || itemsText || 'No details provided'}`;
   };
 
+  const openNoteDialog = (noteId: string, action: NoteAction) => {
+    setReviewingNoteId(noteId);
+    setReviewNotesText('');
+    setNoteAction(action);
+  };
+
+  const closeNoteDialog = () => {
+    setReviewingNoteId(null);
+    setNoteAction(null);
+    setReviewNotesText('');
+  };
+
+  const saveNoteReview = async () => {
+    if (!reviewingNoteId) return;
+    try {
+      await updateSessionNote(reviewingNoteId, {
+        status: noteAction === 'approve' ? 'approved' : 'reviewed',
+        actionStatus: noteAction === 'approve' ? 'ready' : 'acknowledged',
+        adminNotes: reviewNotesText || undefined,
+        reviewedBy: user?.name || user?.email || 'admin',
+      });
+      toast.success(noteAction === 'approve' ? 'Session note approved' : 'Session note reviewed');
+      await refetchSessionNotes();
+      closeNoteDialog();
+    } catch {
+      toast.error('Failed to update note');
+    }
+  };
+
+  const approveNote = async (noteId: string) => {
+    try {
+      await updateSessionNote(noteId, {
+        status: 'approved',
+        actionStatus: 'ready',
+        reviewedBy: user?.name || user?.email || 'admin',
+      });
+      toast.success('Session note approved');
+      await refetchSessionNotes();
+    } catch {
+      toast.error('Failed to update note');
+    }
+  };
+
   if (customerLoading) {
     return (
-      <div className="flex items-center justify-center min-h-[400px]">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+      <div className="flex min-h-[280px] items-center justify-center">
+        <div className="h-7 w-7 animate-spin rounded-full border-2 border-muted border-t-primary" />
       </div>
     );
   }
 
   if (!customer) {
     return (
-      <div className="p-6 text-red-600 bg-red-50 rounded-lg border border-red-200">
-        Customer not found. Please check the customer ID and try again.
+      <div className="rounded-md border border-destructive/30 bg-destructive/5 p-5 text-sm">
+        <p className="font-medium text-foreground">Customer not found</p>
+        <p className="mt-1 text-muted-foreground">Please check the customer ID and try again.</p>
+        <Button variant="outline" size="sm" className="mt-3" onClick={() => navigate('/customers')}>
+          Back to customers
+        </Button>
       </div>
     );
   }
 
+  const customerName = customer.name || 'Unknown Customer';
+  const initials = customer.name?.trim().split(/\s+/).map((part) => part[0]).join('').toUpperCase().slice(0, 2) || '?';
+  const platformLabel = inferredPlatform === 'other'
+    ? 'Other'
+    : inferredPlatform.charAt(0).toUpperCase() + inferredPlatform.slice(1);
+
   return (
-    <div className="space-y-6 animate-in fade-in duration-500">
-      {/* Header Section */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-1">
-        <div className="flex items-center gap-3">
+    <div className="mx-auto max-w-[1400px] space-y-4">
+      {/* Compact customer header */}
+      <div className="flex flex-col gap-3 border-b pb-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex min-w-0 items-center gap-3">
           <Button
             variant="ghost"
-            size="sm"
+            size="icon"
             onClick={() => navigate('/customers')}
-            className="h-9 w-9 p-0"
+            className="h-8 w-8 shrink-0"
             aria-label="Back to customers"
           >
             <ArrowLeft className="h-4 w-4" />
           </Button>
-          <div className="flex items-center gap-3">
-            <div className="relative">
-              <div className="w-10 h-10 rounded-full bg-gradient-to-br from-primary to-primary/80 flex items-center justify-center text-white font-semibold text-sm shadow-sm">
-                {customer.name ? customer.name.charAt(0).toUpperCase() : '?'}
-              </div>
-              <div className="absolute -bottom-1 -right-1 bg-background rounded-full p-0.5">
-                {inferredPlatform === 'whatsapp' && (
-                  <div className="w-5 h-5 rounded-full bg-green-500 flex items-center justify-center">
-                    <i className="fab fa-whatsapp text-white text-xs" />
-                  </div>
-                )}
-                {inferredPlatform === 'instagram' && (
-                  <div className="w-5 h-5 rounded-full bg-gradient-to-br from-pink-500 to-purple-600 flex items-center justify-center">
-                    <i className="fab fa-instagram text-white text-xs" />
-                  </div>
-                )}
-                {inferredPlatform === 'messenger' && (
-                  <div className="w-5 h-5 rounded-full bg-blue-500 flex items-center justify-center">
-                    <i className="fab fa-facebook-messenger text-white text-xs" />
-                  </div>
-                )}
-              </div>
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold text-foreground">
+            {initials}
+          </div>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="truncate text-base font-semibold tracking-tight">{customerName}</h1>
+              <Badge variant="outline" className="h-5 px-1.5 text-[10px] font-normal">{platformLabel}</Badge>
+              <Badge variant={customer.aiEnabled ? 'default' : 'secondary'} className="h-5 gap-1 px-1.5 text-[10px] font-normal">
+                <span className={`h-1.5 w-1.5 rounded-full ${customer.aiEnabled ? 'bg-white' : 'bg-muted-foreground'}`} />
+                {customer.aiEnabled ? 'AI Active' : 'AI Paused'}
+              </Badge>
             </div>
-            <div>
-              <h1 className="text-lg font-semibold tracking-tight text-foreground">
-                {customer.name || 'Unknown Customer'}
-              </h1>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Customer since {format(new Date(customer.createdAt), 'MMM d, yyyy')}
-              </p>
-            </div>
+            <p className="mt-0.5 truncate text-xs text-muted-foreground">
+              {displayPhone !== 'Not provided' ? displayPhone : 'No phone number'}
+              {customer.email ? ` · ${customer.email}` : ''}
+              {' · Joined '}{displayDate(customer.createdAt, 'MMM d, yyyy')}
+            </p>
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge
-            variant={customer.aiEnabled ? 'default' : 'secondary'}
-            className={customer.aiEnabled ? 'bg-green-100 text-green-800 border-green-200 hover:bg-green-100' : ''}
-          >
-            <div className="flex items-center gap-1.5">
-              <div className={`w-1.5 h-1.5 rounded-full ${customer.aiEnabled ? 'bg-green-500 animate-pulse' : 'bg-muted-foreground'}`} />
-              {customer.aiEnabled ? 'AI Active' : 'AI Paused'}
-            </div>
-          </Badge>
-
-          {customer.phone && (
-            <Button variant="outline" size="sm" asChild className="h-9">
-              <a href={`tel:${customer.phone}`} className="flex items-center gap-2">
-                <Phone className="h-3.5 w-3.5" />
-                <span className="text-xs">Call</span>
-              </a>
+        <div className="flex shrink-0 flex-wrap items-center gap-1.5 pl-11 sm:pl-0">
+          {displayPhone !== 'Not provided' && (
+            <Button variant="outline" size="sm" asChild className="h-8 px-2.5">
+              <a href={`tel:${displayPhone}`}><Phone className="mr-1.5 h-3.5 w-3.5" />Call</a>
             </Button>
           )}
-
           {customer.email && (
-            <Button variant="outline" size="sm" asChild className="h-9">
-              <a href={`mailto:${customer.email}`} className="flex items-center gap-2">
-                <Mail className="h-3.5 w-3.5" />
-                <span className="text-xs">Email</span>
-              </a>
+            <Button variant="outline" size="sm" asChild className="h-8 px-2.5">
+              <a href={`mailto:${customer.email}`}><Mail className="mr-1.5 h-3.5 w-3.5" />Email</a>
             </Button>
           )}
-
-          <Button
-            onClick={handleToggleAi}
-            variant="outline"
-            size="sm"
-            className="h-9 gap-2"
-          >
-            <Power className="h-3.5 w-3.5" />
-            <span className="text-xs">{customer.aiEnabled ? 'Disable AI' : 'Enable AI'}</span>
+          <Button onClick={handleToggleAi} disabled={isTogglingAi} variant="outline" size="sm" className="h-8 px-2.5">
+            <Power className="mr-1.5 h-3.5 w-3.5" />
+            {isTogglingAi ? 'Updating…' : customer.aiEnabled ? 'Pause AI' : 'Enable AI'}
           </Button>
         </div>
       </div>
 
-      <Separator />
-
-      {/* Main Content Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-        {/* Left Sidebar - Customer Info & Quick Stats */}
-        <div className="lg:col-span-1 space-y-4">
-          {/* Profile Card */}
-          <Card className="overflow-hidden">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <User className="h-4 w-4" />
-                Profile Details
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-3">
-                <div className="flex items-start gap-3">
-                  <Phone className="h-4 w-4 text-muted-foreground mt-0.5" />
-                  <div className="space-y-0.5">
-                    <p className="text-xs text-muted-foreground">Phone</p>
-                    <p className="text-sm font-medium">{displayPhone}</p>
-                  </div>
-                </div>
-
-                <div className="flex items-start gap-3">
-                  <Mail className="h-4 w-4 text-muted-foreground mt-0.5" />
-                  <div className="space-y-0.5">
-                    <p className="text-xs text-muted-foreground">Email</p>
-                    <p className="text-sm font-medium break-all">{customer.email || 'Not provided'}</p>
-                  </div>
-                </div>
-
-                <div className="flex items-start gap-3">
-                  <Activity className="h-4 w-4 text-muted-foreground mt-0.5" />
-                  <div className="space-y-0.5">
-                    <p className="text-xs text-muted-foreground">Platform</p>
-                    <div className="flex items-center gap-1.5">
-                      <p className="text-sm font-medium capitalize">{inferredPlatform === 'other' ? 'Unknown' : inferredPlatform}</p>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex items-start gap-3">
-                  <Calendar className="h-4 w-4 text-muted-foreground mt-0.5" />
-                  <div className="space-y-0.5">
-                    <p className="text-xs text-muted-foreground">Last Updated</p>
-                    <p className="text-sm font-medium">
-                      {formatDistanceToNow(new Date(customer.updatedAt), { addSuffix: true })}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Communication Stats */}
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <BarChart3 className="h-4 w-4" />
-                Communication Stats
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <p className="text-xs text-muted-foreground">Total Messages</p>
-                  <p className="text-xl font-semibold text-foreground">{messages?.length || 0}</p>
-                </div>
-                <div className="space-y-1.5">
-                  <p className="text-xs text-muted-foreground">Total Bookings</p>
-                  <p className="text-xl font-semibold text-foreground">{bookings?.length || 0}</p>
-                </div>
-                <div className="space-y-1.5">
-                  <p className="text-xs text-muted-foreground">Received</p>
-                  <p className="text-lg font-semibold text-green-600">{inboundMessages.length}</p>
-                </div>
-                <div className="space-y-1.5">
-                  <p className="text-xs text-muted-foreground">Sent</p>
-                  <p className="text-lg font-semibold text-blue-600">{outboundMessages.length}</p>
-                </div>
-              </div>
-
-              {lastMessage && (
-                <div className="pt-3 border-t">
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <Clock className="h-3.5 w-3.5" />
-                    Last Contact
-                  </div>
-                  <p className="text-sm font-medium mt-1">
-                    {formatDistanceToNow(new Date(lastMessage.createdAt), { addSuffix: true })}
-                  </p>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Photo Links */}
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <ImageIcon className="h-4 w-4" />
-                Photo Links
-                <Badge variant="outline" className="ml-auto text-xs font-normal">
-                  {photoLinks?.length || 0}
-                </Badge>
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <SendPhotoLinkCard customerId={customer.id} />
-              
-              {photoLinksLoading ? (
-                <div className="flex items-center justify-center py-6">
-                  <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-primary"></div>
-                </div>
-              ) : photoLinks?.length === 0 ? (
-                <div className="py-6 text-center">
-                  <ImageIcon className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" />
-                  <p className="text-sm text-muted-foreground">No photo links sent yet</p>
-                </div>
-              ) : (
-                <div className="space-y-3 mt-3">
-                  {photoLinks?.slice(0, 3).map((photoLink) => (
-                    <div
-                      key={photoLink.id}
-                      className="p-3 rounded-lg border border-border hover:bg-muted/50 transition-colors"
-                    >
-                      <a
-                        href={photoLink.link}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-sm font-medium text-primary hover:underline break-all"
-                      >
-                        {photoLink.link}
-                      </a>
-                      <p className="text-xs text-muted-foreground mt-1.5">
-                        {format(new Date(photoLink.sentAt), 'MMM d, yyyy • h:mm a')}
-                      </p>
-                    </div>
-                  ))}
-                  {photoLinks && photoLinks.length > 3 && (
-                    <p className="text-xs text-center text-muted-foreground pt-1">
-                      +{photoLinks.length - 3} more
-                    </p>
-                  )}
-                </div>
-              )}
-            </CardContent>
-          </Card>
+      {/* At-a-glance metrics */}
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-b pb-3">
+        <div className="flex items-baseline gap-1.5"><span className="text-lg font-semibold tabular-nums">{messages?.length || 0}</span><span className="text-xs text-muted-foreground">Messages</span></div>
+        <div className="flex items-baseline gap-1.5"><span className="text-lg font-semibold tabular-nums">{bookings?.length || 0}</span><span className="text-xs text-muted-foreground">Bookings</span></div>
+        <div className="flex items-baseline gap-1.5"><span className="text-lg font-semibold tabular-nums">{inboundMessages.length}</span><span className="text-xs text-muted-foreground">Received</span></div>
+        <div className="flex items-baseline gap-1.5"><span className="text-lg font-semibold tabular-nums">{outboundMessages.length}</span><span className="text-xs text-muted-foreground">Sent</span></div>
+        <div className="flex items-baseline gap-1.5"><span className="text-lg font-semibold tabular-nums">{pendingSessionNotesCount}</span><span className="text-xs text-muted-foreground">Pending notes</span></div>
+        <div className="ml-auto flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Activity className="h-3.5 w-3.5" />
+          Updated {displayRelativeDate(customer.updatedAt)}
         </div>
+      </div>
 
-        {/* Main Content Area */}
-        <div className="lg:col-span-3 space-y-6">
-          {/* Tabs for Main Content */}
-          <Tabs defaultValue="conversation" className="w-full">
-            <TabsList className="grid w-full max-w-2xl grid-cols-5">
-              <TabsTrigger value="conversation" className="text-xs">
-                <MessageSquare className="h-3.5 w-3.5 mr-2" />
-                Conversation
-                <Badge variant="outline" className="ml-1 h-4 px-1 text-[10px]">{messages?.length || 0}</Badge>
-              </TabsTrigger>
-              <TabsTrigger value="bookings" className="text-xs">
-                <CalendarCheck className="h-3.5 w-3.5 mr-2" />
-                Bookings
-                <Badge variant="outline" className="ml-1 h-4 px-1 text-[10px]">{bookings?.length || 0}</Badge>
-              </TabsTrigger>
-              <TabsTrigger value="session-notes" className="text-xs">
-                <ClipboardList className="h-3.5 w-3.5 mr-2" />
-                Session Notes
-                {pendingSessionNotesCount > 0 && (
-                  <Badge variant="destructive" className="ml-1 h-4 px-1 text-[10px]">
-                    {pendingSessionNotesCount}
-                  </Badge>
-                )}
-              </TabsTrigger>
-              <TabsTrigger value="invoices" className="text-xs">
-                <FileText className="h-3.5 w-3.5 mr-2" />
-                Invoices
-                <Badge variant="outline" className="ml-1 h-4 px-1 text-[10px]">{invoices?.length || 0}</Badge>
-              </TabsTrigger>
-              <TabsTrigger value="insights" className="text-xs">
-                <TrendingUp className="h-3.5 w-3.5 mr-2" />
-                Insights
-              </TabsTrigger>
-            </TabsList>
+      <Tabs defaultValue="conversation" className="w-full">
+        <TabsList className="flex h-auto w-full justify-start gap-1 overflow-x-auto rounded-md bg-muted/60 p-1">
+          <TabsTrigger value="conversation" className="h-8 shrink-0 px-3 text-xs">
+            <MessageSquare className="mr-1.5 h-3.5 w-3.5" />Conversation <span className="ml-1 text-muted-foreground">{messages?.length || 0}</span>
+          </TabsTrigger>
+          <TabsTrigger value="bookings" className="h-8 shrink-0 px-3 text-xs">
+            <CalendarCheck className="mr-1.5 h-3.5 w-3.5" />Bookings <span className="ml-1 text-muted-foreground">{bookings?.length || 0}</span>
+          </TabsTrigger>
+          <TabsTrigger value="session-notes" className="h-8 shrink-0 px-3 text-xs">
+            <ClipboardList className="mr-1.5 h-3.5 w-3.5" />Notes
+            {pendingSessionNotesCount > 0 && <span className="ml-1 rounded bg-destructive px-1 text-[10px] leading-4 text-destructive-foreground">{pendingSessionNotesCount}</span>}
+          </TabsTrigger>
+          <TabsTrigger value="photo-links" className="h-8 shrink-0 px-3 text-xs">
+            <ImageIcon className="mr-1.5 h-3.5 w-3.5" />Photos <span className="ml-1 text-muted-foreground">{photoLinks?.length || 0}</span>
+          </TabsTrigger>
+          <TabsTrigger value="invoices" className="h-8 shrink-0 px-3 text-xs">
+            <FileText className="mr-1.5 h-3.5 w-3.5" />Invoices <span className="ml-1 text-muted-foreground">{invoices?.length || 0}</span>
+          </TabsTrigger>
+          <TabsTrigger value="insights" className="h-8 shrink-0 px-3 text-xs">
+            <TrendingUp className="mr-1.5 h-3.5 w-3.5" />Insights
+          </TabsTrigger>
+        </TabsList>
 
-            {/* Conversation Tab */}
-            <TabsContent value="conversation" className="mt-4">
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-sm font-medium">Conversation History</CardTitle>
-                  <CardDescription className="text-xs">
-                    {messages?.length || 0} total messages • {inboundMessages.length} received • {outboundMessages.length} sent
-                  </CardDescription>
-                </CardHeader>
-                <Separator />
-                <CardContent className="p-0">
-                  <div className="h-[62vh] md:h-[calc(100vh-16rem)] overflow-y-auto bg-muted/20 p-4">
-                    {messagesLoading ? (
-                      <div className="flex items-center justify-center h-full">
-                        <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary"></div>
-                      </div>
-                    ) : messages?.length === 0 ? (
-                      <div className="flex flex-col items-center justify-center h-full text-muted-foreground py-12">
-                        <MessageSquare className="h-10 w-10 mb-3 opacity-20" />
-                        <p className="text-sm">No messages yet</p>
-                        <p className="text-xs mt-1">Start a conversation with the customer</p>
-                      </div>
-                    ) : (
-                      <div className="space-y-3">
-                        {conversationTimeline.map((item) => {
-                          if (item.kind === 'day') {
-                            return (
-                              <div key={item.key} className="sticky top-0 z-10 flex justify-center py-1">
-                                <span className="rounded-full border border-border bg-background px-3 py-1 text-[11px] font-medium text-muted-foreground">
-                                  {item.label}
-                                </span>
-                              </div>
-                            );
-                          }
-
-                          const message = item.message;
-                          const outbound = message.direction === 'outbound';
-
-                          return (
-                            <div key={item.key} className={`flex ${outbound ? 'justify-end' : 'justify-start'}`}>
-                              <div
-                                className={`max-w-[88%] md:max-w-[76%] rounded-2xl p-3 shadow-sm ${
-                                  outbound
-                                    ? 'bg-primary text-primary-foreground rounded-br-md'
-                                    : 'bg-background border border-border rounded-bl-md'
-                                }`}
-                              >
-                                <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">{message.content}</p>
-                                <div className="mt-2 flex items-center justify-between gap-3">
-                                  <p className={`text-[11px] ${outbound ? 'text-primary-foreground/75' : 'text-muted-foreground'}`}>
-                                    {format(new Date(message.createdAt), 'h:mm a')}
-                                  </p>
-                                  <Badge
-                                    variant="outline"
-                                    className={`h-5 text-[10px] ${
-                                      outbound
-                                        ? 'border-primary-foreground/30 text-primary-foreground/85'
-                                        : 'border-border text-muted-foreground'
-                                    }`}
-                                  >
-                                    {outbound ? 'Sent' : 'Customer'}
-                                  </Badge>
-                                </div>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
+        {/* Conversation */}
+        <TabsContent value="conversation" className="mt-3">
+          <Card className="overflow-hidden rounded-md shadow-none">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2.5">
+              <div>
+                <p className="text-sm font-medium">Conversation history</p>
+                <p className="text-xs text-muted-foreground">{messages?.length || 0} messages · {inboundMessages.length} received · {outboundMessages.length} sent</p>
+              </div>
+              {lastMessage && <p className="text-xs text-muted-foreground">Last contact {displayRelativeDate(lastMessage.createdAt)}</p>}
+            </div>
+            <CardContent className="bg-muted/15 p-3">
+              <div className="h-[min(65vh,720px)] min-h-[320px] overflow-y-auto pr-1">
+                {messagesLoading ? (
+                  <div className="flex h-full items-center justify-center"><div className="h-6 w-6 animate-spin rounded-full border-2 border-muted border-t-primary" /></div>
+                ) : !messages?.length ? (
+                  <div className="flex h-full flex-col items-center justify-center py-12 text-muted-foreground">
+                    <MessageSquare className="mb-2 h-8 w-8 opacity-30" />
+                    <p className="text-sm">No messages yet</p>
                   </div>
-                </CardContent>
-              </Card>
-            </TabsContent>
-
-            {/* Bookings Tab */}
-            <TabsContent value="bookings" className="mt-4">
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-sm font-medium">Booking History</CardTitle>
-                  <CardDescription className="text-xs">
-                    {bookings?.length || 0} total bookings
-                  </CardDescription>
-                </CardHeader>
-                <Separator />
-                <CardContent>
-                  {bookingsLoading ? (
-                    <div className="flex items-center justify-center py-12">
-                      <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary"></div>
-                    </div>
-                  ) : bookings?.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
-                      <CalendarCheck className="h-10 w-10 mb-3 opacity-20" />
-                      <p className="text-sm">No bookings yet</p>
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      {bookings?.map((booking) => (
-                        <div
-                          key={booking.id}
-                          className="p-4 rounded-lg border border-border hover:bg-muted/50 transition-colors"
-                        >
-                          <div className="flex items-start justify-between gap-4">
-                            <div className="space-y-1">
-                              <p className="text-sm font-medium">{booking.service}</p>
-                              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                                <Calendar className="h-3 w-3" />
-                                {format(new Date(booking.dateTime), 'MMM d, yyyy • h:mm a')}
-                              </div>
-                            </div>
-                            <Badge
-                              variant={
-                                booking.status === 'confirmed'
-                                  ? 'default'
-                                  : booking.status === 'cancelled'
-                                    ? 'destructive'
-                                    : 'secondary'
-                              }
-                              className="text-xs font-normal"
-                            >
-                              {booking.status}
-                            </Badge>
-                          </div>
-
-                          <div className="mt-3 border-t pt-3 space-y-2">
-                            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Deposits & Payments</p>
-                            {booking.payments && booking.payments.length > 0 ? (
-                              <div className="space-y-2">
-                                {booking.payments.map((payment) => (
-                                  <div key={payment.id} className="rounded-md border border-border bg-background p-2.5">
-                                    <div className="flex items-center justify-between gap-2">
-                                      <p className="text-sm font-medium">KSh {payment.amount.toLocaleString()}</p>
-                                      <Badge
-                                        variant={payment.status === 'success' ? 'default' : payment.status === 'failed' ? 'destructive' : 'secondary'}
-                                        className="text-[10px]"
-                                      >
-                                        {payment.status}
-                                      </Badge>
-                                    </div>
-                                    <div className="mt-1.5 space-y-1 text-xs text-muted-foreground">
-                                      <p>M-Pesa code: {payment.mpesaReceipt || 'Pending'}</p>
-                                      <p>Checkout ID: {payment.checkoutRequestId || 'N/A'}</p>
-                                      <p>Sent: {format(new Date(payment.createdAt), 'MMM d, yyyy • h:mm a')}</p>
-                                      <p>Updated: {format(new Date(payment.updatedAt), 'MMM d, yyyy • h:mm a')}</p>
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            ) : (
-                              <p className="text-xs text-muted-foreground">No deposit record attached to this booking yet.</p>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            </TabsContent>
-
-            {/* Session Notes Tab */}
-            <TabsContent value="session-notes" className="mt-4">
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-sm font-medium flex items-center gap-2">
-                    <ClipboardList className="h-4 w-4" />
-                    Session Notes & Preferences
-                  </CardTitle>
-                  <CardDescription className="text-xs">
-                    Operations review queue: approve actionable customer preferences and requests before shoot execution.
-                  </CardDescription>
-                </CardHeader>
-                <Separator />
-                <CardContent className="p-4">
-                  <div className="flex flex-wrap gap-2 mb-4">
-                    {[
-                      { key: 'pending', label: `Pending (${pendingSessionNotesCount})` },
-                      { key: 'all', label: `All (${sessionNotes?.length || 0})` },
-                      { key: 'approved', label: 'Approved' },
-                      { key: 'reviewed', label: 'Reviewed' },
-                      { key: 'declined', label: 'Declined' },
-                    ].map((item) => (
-                      <Button
-                        key={item.key}
-                        size="sm"
-                        variant={sessionNoteFilter === item.key ? 'default' : 'outline'}
-                        className="h-7 text-xs"
-                        onClick={() => setSessionNoteFilter(item.key as typeof sessionNoteFilter)}
-                      >
-                        {item.label}
-                      </Button>
-                    ))}
-                  </div>
-                  {sessionNotesLoading ? (
-                    <div className="flex items-center justify-center py-8">
-                      <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary"></div>
-                    </div>
-                  ) : visibleSessionNotes.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
-                      <ClipboardList className="h-10 w-10 mb-3 opacity-20" />
-                      <p className="text-sm">No session notes match this filter</p>
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      {visibleSessionNotes.map((note) => (
-                        <div
-                          key={note.id}
-                          className={`p-4 rounded-lg border ${
-                            note.status === 'pending'
-                              ? 'border-amber-200 bg-amber-50/50'
-                              : note.status === 'approved'
-                              ? 'border-green-200 bg-green-50/50'
-                              : note.status === 'declined'
-                              ? 'border-red-200 bg-red-50/50'
-                              : 'border-border bg-muted/30'
-                          }`}
-                        >
-                          <div className="flex items-start justify-between gap-4">
-                            <div className="flex-1 space-y-2">
-                              <div className="flex items-center gap-2">
-                                <Badge
-                                  variant={
-                                    note.type === 'external_people'
-                                      ? 'default'
-                                      : note.type === 'external_items'
-                                      ? 'secondary'
-                                      : 'outline'
-                                  }
-                                  className="text-xs"
-                                >
-                                  {getNoteTypeLabel(note.type)}
-                                </Badge>
-                                <Badge
-                                  variant={
-                                    note.status === 'pending'
-                                      ? 'secondary'
-                                      : note.status === 'approved'
-                                      ? 'default'
-                                      : 'secondary'
-                                  }
-                                  className={`text-xs ${
-                                    note.status === 'pending'
-                                      ? 'border-amber-300 bg-amber-100 text-amber-800 hover:bg-amber-100'
-                                      : ''
-                                  }`}
-                                >
-                                  {note.status}
-                                </Badge>
-                                {note.booking && (
-                                  <Badge variant="outline" className="text-xs">
-                                    {note.booking.service}
-                                  </Badge>
-                                )}
-                                <Badge
-                                  variant="outline"
-                                  className={`text-xs ${note.priority === 'urgent' ? 'border-red-300 bg-red-50 text-red-700' : note.priority === 'high' ? 'border-amber-300 bg-amber-50 text-amber-700' : ''}`}
-                                >
-                                  {note.priority === 'normal' ? 'Normal priority' : `${note.priority} priority`}
-                                </Badge>
-                                <Badge variant="outline" className="text-xs">
-                                  {getNoteCategoryLabel(note.category)}
-                                </Badge>
-                                <Badge variant="outline" className="text-xs">
-                                  {note.actionStatus}
-                                </Badge>
-                              </div>
-                              
-                              <div>
-                                <p className="text-sm font-medium mb-1">
-                                  {getNoteSummary(note)}
-                                </p>
-                                {note.description && note.type !== 'special_request' && (
-                                  <p className="text-xs text-muted-foreground mb-2">
-                                    {note.description}
-                                  </p>
-                                )}
-                                {note.sourceMessage && note.sourceMessage.trim() !== (note.description || '').trim() && (
-                                  <p className="text-xs text-muted-foreground italic mb-2">
-                                    "{note.sourceMessage}"
-                                  </p>
-                                )}
-                                {note.booking && (
-                                  <p className="text-xs text-muted-foreground">
-                                    Booking: {format(new Date(note.booking.dateTime), 'MMM d, yyyy • h:mm a')}
-                                  </p>
-                                )}
-                              </div>
-
-                              {note.adminNotes && (
-                                <div className="mt-2 p-2 bg-background rounded border border-border">
-                                  <p className="text-xs font-medium text-muted-foreground mb-1">Admin Notes:</p>
-                                  <p className="text-xs">{note.adminNotes}</p>
-                                </div>
-                              )}
-
-                              <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                                <span>
-                                  {format(new Date(note.createdAt), 'MMM d, yyyy • h:mm a')}
-                                </span>
-                                {note.reviewedAt && (
-                                  <span>
-                                    Reviewed {format(new Date(note.reviewedAt), 'MMM d, yyyy')}
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-
-                            {note.status === 'pending' && (
-                              <div className="flex gap-2">
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  className="h-8 text-xs"
-                                  onClick={async () => {
-                                    try {
-                                      await updateSessionNote(note.id, {
-                                        status: 'approved',
-                                        actionStatus: 'ready',
-                                        reviewedBy: user?.name || user?.email || 'admin',
-                                      });
-                                      toast.success('Session note approved');
-                                      refetchSessionNotes();
-                                    } catch (error) {
-                                      toast.error('Failed to update note');
-                                    }
-                                  }}
-                                >
-                                  <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
-                                  Approve
-                                </Button>
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  className="h-8 text-xs"
-                                  onClick={() => {
-                                    setReviewingNoteId(note.id);
-                                    setReviewNotesText('');
-                                    setNoteAction('approve');
-                                  }}
-                                >
-                                  <FileText className="h-3.5 w-3.5 mr-1" />
-                                  Approve + Note
-                                </Button>
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  className="h-8 text-xs"
-                                  onClick={() => {
-                                    setReviewingNoteId(note.id);
-                                    setReviewNotesText('');
-                                    setNoteAction('review');
-                                  }}
-                                >
-                                  <Clock className="h-3.5 w-3.5 mr-1" />
-                                  Review
-                                </Button>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            </TabsContent>
-
-            {/* Invoices Tab */}
-            <TabsContent value="invoices" className="mt-4">
-              <InvoiceCard
-                customerId={customer.id}
-                invoices={invoices || []}
-                isLoading={invoicesLoading}
-                onRefresh={refetchInvoices}
-              />
-            </TabsContent>
-
-            {/* Insights Tab */}
-            <TabsContent value="insights" className="mt-4 space-y-4">
-              {/* This customer's own sentiment history - not business-wide stats */}
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-sm font-medium flex items-center gap-2">
-                    <Smile className="h-4 w-4" />
-                    Customer Sentiment
-                  </CardTitle>
-                  <CardDescription className="text-xs">Based on this customer's own messages</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  {!sentimentHistory || sentimentHistory.length === 0 ? (
-                    <p className="text-sm text-muted-foreground text-center py-4">No sentiment data yet for this customer</p>
-                  ) : (
-                    <div className="space-y-3">
-                      <div className="flex items-center gap-4">
-                        <div>
-                          <p className="text-xs text-muted-foreground">Average Score</p>
-                          <p className="text-lg font-semibold">
-                            {(sentimentHistory.reduce((sum, s) => sum + s.score, 0) / sentimentHistory.length).toFixed(2)}
-                          </p>
-                        </div>
-                        <div>
-                          <p className="text-xs text-muted-foreground">Readings</p>
-                          <p className="text-lg font-semibold">{sentimentHistory.length}</p>
-                        </div>
-                      </div>
-                      <div className="space-y-1.5 pt-2 border-t">
-                        {sentimentHistory.slice(0, 5).map((s) => (
-                          <div key={s.id} className="flex items-center justify-between text-sm">
-                            <Badge
-                              variant={s.sentiment.includes('negative') ? 'destructive' : s.sentiment.includes('positive') ? 'default' : 'secondary'}
-                              className="text-xs capitalize"
-                            >
-                              {s.sentiment.replace('_', ' ')}
-                            </Badge>
-                            <span className="text-xs text-muted-foreground">{formatDistanceToNow(new Date(s.createdAt), { addSuffix: true })}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-
-              {/* Real comparison against actual business-wide averages */}
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-sm font-medium">Activity vs. Average Customer</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-5">
-                    {[
-                      { label: 'Messages', value: messages?.length || 0, avg: averageActivity?.avgMessages || 0, color: 'bg-primary' },
-                      { label: 'Bookings', value: bookings?.length || 0, avg: averageActivity?.avgBookings || 0, color: 'bg-green-500' },
-                    ].map(({ label, value, avg, color }) => {
-                      const max = Math.max(value, avg, 1);
+                ) : (
+                  <div className="space-y-2.5">
+                    {conversationTimeline.map((item) => {
+                      if (item.kind === 'day') {
+                        return <div key={item.key} className="sticky top-0 z-10 flex justify-center py-1"><span className="rounded-full border bg-background px-2.5 py-0.5 text-[10px] text-muted-foreground">{item.label}</span></div>;
+                      }
+                      const outbound = item.message.direction === 'outbound';
                       return (
-                        <div key={label}>
-                          <div className="flex items-center justify-between mb-1.5">
-                            <p className="text-xs font-medium">{label}</p>
-                            <p className="text-xs text-muted-foreground">{value} vs avg {avg.toFixed(1)}</p>
-                          </div>
-                          <div className="space-y-1">
-                            <div className="w-full bg-muted rounded-full h-1.5">
-                              <div className={`${color} h-1.5 rounded-full`} style={{ width: `${Math.min((value / max) * 100, 100)}%` }} />
-                            </div>
-                            <div className="w-full bg-muted rounded-full h-1.5">
-                              <div className="bg-muted-foreground/40 h-1.5 rounded-full" style={{ width: `${Math.min((avg / max) * 100, 100)}%` }} />
+                        <div key={item.key} className={`flex ${outbound ? 'justify-end' : 'justify-start'}`}>
+                          <div className={`max-w-[90%] rounded-xl px-3 py-2 ${outbound ? 'rounded-br-sm bg-primary text-primary-foreground' : 'rounded-bl-sm border bg-background'}`}>
+                            <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed">{item.message.content}</p>
+                            <div className="mt-1.5 flex items-center justify-end gap-2">
+                              <span className={`text-[10px] ${outbound ? 'text-primary-foreground/70' : 'text-muted-foreground'}`}>{displayDate(item.message.createdAt, 'h:mm a')}</span>
+                              <span className={`text-[10px] ${outbound ? 'text-primary-foreground/70' : 'text-muted-foreground'}`}>{outbound ? 'Sent' : 'Customer'}</span>
                             </div>
                           </div>
                         </div>
                       );
                     })}
                   </div>
-                </CardContent>
-              </Card>
-            </TabsContent>
-          </Tabs>
-        </div>
-      </div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
 
-      {/* Review session note - replaces the old native prompt() */}
-      <Dialog
-        open={reviewingNoteId !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setReviewingNoteId(null);
-            setNoteAction(null);
-            setReviewNotesText('');
-          }
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{noteAction === 'approve' ? 'Approve Session Note' : 'Review Session Note'}</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-2">
-            <Textarea
-              placeholder={noteAction === 'approve' ? 'Add approval notes (optional)...' : 'Add review notes (optional)...'}
-              value={reviewNotesText}
-              onChange={(e) => setReviewNotesText(e.target.value)}
-              rows={4}
-            />
+        {/* Bookings */}
+        <TabsContent value="bookings" className="mt-3">
+          <Card className="rounded-md shadow-none">
+            <CardHeader className="px-3 py-2.5">
+              <CardTitle className="text-sm font-medium">Booking history</CardTitle>
+              <CardDescription className="text-xs">{bookings?.length || 0} total bookings</CardDescription>
+            </CardHeader>
+            <Separator />
+            <CardContent className="p-3">
+              {bookingsLoading ? (
+                <div className="flex justify-center py-10"><div className="h-6 w-6 animate-spin rounded-full border-2 border-muted border-t-primary" /></div>
+              ) : !bookings?.length ? (
+                <div className="py-12 text-center text-sm text-muted-foreground">No bookings yet</div>
+              ) : (
+                <div className="divide-y">
+                  {bookings.map((booking) => (
+                    <div key={booking.id} className="py-3 first:pt-0 last:pb-0">
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium">{booking.service}</p>
+                          <p className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground"><Calendar className="h-3 w-3" />{displayDate(booking.dateTime)}</p>
+                        </div>
+                        <Badge variant={booking.status === 'confirmed' ? 'default' : booking.status === 'cancelled' ? 'destructive' : 'secondary'} className="h-5 text-[10px] font-normal">{booking.status}</Badge>
+                      </div>
+                      <div className="mt-2 rounded-sm bg-muted/40 px-2.5 py-2">
+                        <p className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Deposits & payments</p>
+                        {booking.payments && booking.payments.length > 0 ? (
+                          <div className="space-y-2">
+                            {booking.payments.map((payment) => (
+                              <div key={payment.id} className="border-b border-border/70 pb-2 last:border-0 last:pb-0">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <span className="text-sm font-medium">KSh {Number(payment.amount || 0).toLocaleString()}</span>
+                                  <Badge variant={payment.status === 'success' ? 'default' : payment.status === 'failed' ? 'destructive' : 'secondary'} className="h-5 text-[10px]">{payment.status}</Badge>
+                                </div>
+                                <div className="mt-1 grid gap-x-4 gap-y-0.5 text-[11px] text-muted-foreground sm:grid-cols-2">
+                                  <span>M-Pesa code: {payment.mpesaReceipt || 'Pending'}</span>
+                                  <span>Checkout ID: {payment.checkoutRequestId || 'N/A'}</span>
+                                  <span>Sent: {displayDate(payment.createdAt)}</span>
+                                  <span>Updated: {displayDate(payment.updatedAt)}</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : <p className="text-xs text-muted-foreground">No deposit record attached to this booking yet.</p>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Session notes */}
+        <TabsContent value="session-notes" className="mt-3">
+          <Card className="rounded-md shadow-none">
+            <CardHeader className="px-3 py-2.5">
+              <CardTitle className="flex items-center gap-2 text-sm font-medium"><ClipboardList className="h-4 w-4" />Session notes & preferences</CardTitle>
+              <CardDescription className="text-xs">Review customer requests and preferences before the shoot.</CardDescription>
+            </CardHeader>
+            <Separator />
+            <CardContent className="p-3">
+              <div className="mb-3 flex flex-wrap gap-1.5">
+                {[
+                  { key: 'pending', label: `Pending (${pendingSessionNotesCount})` },
+                  { key: 'all', label: `All (${sessionNotes?.length || 0})` },
+                  { key: 'approved', label: 'Approved' },
+                  { key: 'reviewed', label: 'Reviewed' },
+                  { key: 'declined', label: 'Declined' },
+                ].map((item) => (
+                  <Button key={item.key} size="sm" variant={sessionNoteFilter === item.key ? 'default' : 'outline'} className="h-7 px-2.5 text-[11px]" onClick={() => setSessionNoteFilter(item.key as NoteFilter)}>{item.label}</Button>
+                ))}
+              </div>
+              {sessionNotesLoading ? (
+                <div className="flex justify-center py-8"><div className="h-6 w-6 animate-spin rounded-full border-2 border-muted border-t-primary" /></div>
+              ) : visibleSessionNotes.length === 0 ? (
+                <div className="py-10 text-center text-sm text-muted-foreground">No session notes match this filter.</div>
+              ) : (
+                <div className="divide-y">
+                  {visibleSessionNotes.map((note) => (
+                    <div key={note.id} className="py-3 first:pt-0 last:pb-0">
+                      <div className="flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="min-w-0 flex-1 space-y-1.5">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <Badge variant="outline" className="h-5 text-[10px]">{getNoteTypeLabel(note.type)}</Badge>
+                            <Badge variant={note.status === 'approved' ? 'default' : note.status === 'declined' ? 'destructive' : 'secondary'} className="h-5 text-[10px]">{note.status}</Badge>
+                            {note.booking && <Badge variant="outline" className="h-5 text-[10px]">{note.booking.service}</Badge>}
+                            <Badge variant="outline" className={`h-5 text-[10px] ${note.priority === 'urgent' ? 'border-destructive/40 text-destructive' : note.priority === 'high' ? 'border-amber-500/40 text-amber-700' : ''}`}>{note.priority === 'normal' ? 'Normal' : note.priority}</Badge>
+                            <Badge variant="outline" className="h-5 text-[10px]">{getNoteCategoryLabel(note.category)}</Badge>
+                            <Badge variant="outline" className="h-5 text-[10px]">{note.actionStatus}</Badge>
+                          </div>
+                          <p className="text-[13px] font-medium">{getNoteSummary(note)}</p>
+                          {note.description && note.type !== 'special_request' && <p className="text-xs text-muted-foreground">{note.description}</p>}
+                          {note.sourceMessage && note.sourceMessage.trim() !== (note.description || '').trim() && <p className="text-xs italic text-muted-foreground">“{note.sourceMessage}”</p>}
+                          {note.booking && <p className="text-xs text-muted-foreground">Booking: {displayDate(note.booking.dateTime)}</p>}
+                          {note.adminNotes && <div className="rounded-sm border bg-muted/30 px-2.5 py-2"><p className="mb-0.5 text-[10px] font-medium text-muted-foreground">Admin notes</p><p className="text-xs">{note.adminNotes}</p></div>}
+                          <p className="text-[10px] text-muted-foreground">{displayDate(note.createdAt)}{note.reviewedAt ? ` · Reviewed ${displayDate(note.reviewedAt, 'MMM d, yyyy')}` : ''}</p>
+                        </div>
+                        {note.status === 'pending' && (
+                          <div className="flex shrink-0 flex-wrap gap-1.5 lg:justify-end">
+                            <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => approveNote(note.id)}><CheckCircle2 className="mr-1 h-3 w-3" />Approve</Button>
+                            <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => openNoteDialog(note.id, 'approve')}><FileText className="mr-1 h-3 w-3" />Approve + note</Button>
+                            <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => openNoteDialog(note.id, 'review')}><Clock className="mr-1 h-3 w-3" />Review</Button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Photo links */}
+        <TabsContent value="photo-links" className="mt-3">
+          <Card className="rounded-md shadow-none">
+            <CardHeader className="px-3 py-2.5">
+              <CardTitle className="flex items-center gap-2 text-sm font-medium"><ImageIcon className="h-4 w-4" />Photo links</CardTitle>
+              <CardDescription className="text-xs">Send a photo link and review links previously sent to this customer.</CardDescription>
+            </CardHeader>
+            <Separator />
+            <CardContent className="space-y-3 p-3">
+              <SendPhotoLinkCard customerId={customer.id} />
+              {photoLinksLoading ? (
+                <div className="flex justify-center py-6"><div className="h-5 w-5 animate-spin rounded-full border-2 border-muted border-t-primary" /></div>
+              ) : !photoLinks?.length ? (
+                <p className="py-6 text-center text-sm text-muted-foreground">No photo links sent yet.</p>
+              ) : (
+                <div className="divide-y rounded-sm border">
+                  {photoLinks.map((photoLink) => (
+                    <div key={photoLink.id} className="flex flex-col gap-1 px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between">
+                      <a href={photoLink.link} target="_blank" rel="noopener noreferrer" className="break-all text-xs font-medium text-primary hover:underline">{photoLink.link}</a>
+                      <span className="shrink-0 text-[11px] text-muted-foreground">{displayDate(photoLink.sentAt)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Invoices */}
+        <TabsContent value="invoices" className="mt-3">
+          <InvoiceCard customerId={customer.id} invoices={invoices || []} isLoading={invoicesLoading} onRefresh={refetchInvoices} />
+        </TabsContent>
+
+        {/* Insights */}
+        <TabsContent value="insights" className="mt-3">
+          <div className="grid gap-3 lg:grid-cols-2">
+            <Card className="rounded-md shadow-none">
+              <CardHeader className="px-3 py-2.5">
+                <CardTitle className="flex items-center gap-2 text-sm font-medium"><Smile className="h-4 w-4" />Customer sentiment</CardTitle>
+                <CardDescription className="text-xs">Based on this customer's own messages.</CardDescription>
+              </CardHeader>
+              <Separator />
+              <CardContent className="p-3">
+                {!sentimentHistory?.length ? (
+                  <p className="py-5 text-center text-sm text-muted-foreground">No sentiment data yet for this customer.</p>
+                ) : (
+                  <>
+                    <div className="mb-3 flex gap-6">
+                      <div><p className="text-[11px] text-muted-foreground">Average score</p><p className="text-lg font-semibold tabular-nums">{(sentimentHistory.reduce((sum, item) => sum + item.score, 0) / sentimentHistory.length).toFixed(2)}</p></div>
+                      <div><p className="text-[11px] text-muted-foreground">Readings</p><p className="text-lg font-semibold tabular-nums">{sentimentHistory.length}</p></div>
+                    </div>
+                    <div className="divide-y border-t">
+                      {sentimentHistory.slice(0, 5).map((item) => (
+                        <div key={item.id} className="flex items-center justify-between gap-2 py-2">
+                          <Badge variant={item.sentiment.includes('negative') ? 'destructive' : item.sentiment.includes('positive') ? 'default' : 'secondary'} className="text-[10px] capitalize">{item.sentiment.replace('_', ' ')}</Badge>
+                          <span className="text-[11px] text-muted-foreground">{displayRelativeDate(item.createdAt)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card className="rounded-md shadow-none">
+              <CardHeader className="px-3 py-2.5">
+                <CardTitle className="text-sm font-medium">Activity vs. average customer</CardTitle>
+                <CardDescription className="text-xs">Comparison with current business-wide averages.</CardDescription>
+              </CardHeader>
+              <Separator />
+              <CardContent className="space-y-4 p-3">
+                {[
+                  { label: 'Messages', value: messages?.length || 0, avg: averageActivity?.avgMessages || 0 },
+                  { label: 'Bookings', value: bookings?.length || 0, avg: averageActivity?.avgBookings || 0 },
+                ].map(({ label, value, avg }) => {
+                  const max = Math.max(value, avg, 1);
+                  return (
+                    <div key={label}>
+                      <div className="mb-1.5 flex items-center justify-between gap-2"><span className="text-xs font-medium">{label}</span><span className="text-[11px] tabular-nums text-muted-foreground">{value} · average {avg.toFixed(1)}</span></div>
+                      <div className="space-y-1.5">
+                        <div className="h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary" style={{ width: `${Math.min((value / max) * 100, 100)}%` }} /></div>
+                        <div className="h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-muted-foreground/40" style={{ width: `${Math.min((avg / max) * 100, 100)}%` }} /></div>
+                      </div>
+                    </div>
+                  );
+                })}
+                <div className="flex flex-wrap gap-4 border-t pt-2 text-[10px] text-muted-foreground"><span className="flex items-center gap-1.5"><span className="h-1.5 w-3 rounded-full bg-primary" />Customer</span><span className="flex items-center gap-1.5"><span className="h-1.5 w-3 rounded-full bg-muted-foreground/40" />Average</span></div>
+              </CardContent>
+            </Card>
           </div>
+        </TabsContent>
+      </Tabs>
+
+      {/* Session note review dialog */}
+      <Dialog open={reviewingNoteId !== null} onOpenChange={(open) => { if (!open) closeNoteDialog(); }}>
+        <DialogContent className="sm:max-w-[440px]">
+          <DialogHeader>
+            <DialogTitle className="text-base">{noteAction === 'approve' ? 'Approve session note' : 'Review session note'}</DialogTitle>
+          </DialogHeader>
+          <Textarea
+            placeholder={noteAction === 'approve' ? 'Add approval notes (optional)…' : 'Add review notes (optional)…'}
+            value={reviewNotesText}
+            onChange={(event) => setReviewNotesText(event.target.value)}
+            rows={4}
+          />
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setReviewingNoteId(null);
-                setNoteAction(null);
-                setReviewNotesText('');
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={async () => {
-                if (!reviewingNoteId) return;
-                try {
-                  await updateSessionNote(reviewingNoteId, {
-                    status: noteAction === 'approve' ? 'approved' : 'reviewed',
-                    actionStatus: noteAction === 'approve' ? 'ready' : 'acknowledged',
-                    adminNotes: reviewNotesText || undefined,
-                    reviewedBy: user?.name || user?.email || 'admin',
-                  });
-                  toast.success(noteAction === 'approve' ? 'Session note approved' : 'Session note reviewed');
-                  refetchSessionNotes();
-                  setReviewingNoteId(null);
-                  setNoteAction(null);
-                  setReviewNotesText('');
-                } catch {
-                  toast.error('Failed to update note');
-                }
-              }}
-            >
-              {noteAction === 'approve' ? 'Approve Note' : 'Save Review'}
-            </Button>
+            <Button variant="outline" size="sm" onClick={closeNoteDialog}>Cancel</Button>
+            <Button size="sm" onClick={saveNoteReview}>{noteAction === 'approve' ? 'Approve note' : 'Save review'}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -1,43 +1,62 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useUIStore } from '@/state/uiStore';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
-import { Phone, MessageSquare, Settings, AlertCircle, CheckCircle, Send, Loader2 } from 'lucide-react';
-import { Instagram as InstagramIcon } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import {
+  ArrowLeft,
+  Instagram as InstagramIcon,
+  MessageSquare,
+  Search,
+  Send,
+  ChevronDown,
+  Loader2,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { API_BASE_URL } from '@/config';
-
 import { io, Socket } from 'socket.io-client';
-
 import {
-  getInstagramSettings,
-  updateInstagramSettings,
-  testInstagramConnection,
-  sendInstagramMessage,
   getInstagramMessages,
   getInstagramConversations,
+  sendInstagramMessage,
   InstagramSettings,
   InstagramMessage,
-  InstagramConversation
+  InstagramConversation,
 } from '@/api/instagram';
 import { useToast } from '@/hooks/use-toast';
 
+const POLL_INTERVAL = 3000;
+
+const getMessageList = (response: any): InstagramMessage[] => {
+  const list = response?.data?.messages ?? response?.messages ?? response?.data ?? [];
+  return Array.isArray(list) ? list : [];
+};
+
+const getConversationList = (response: any): InstagramConversation[] => {
+  const list = response?.data?.conversations ?? response?.conversations ?? [];
+  return Array.isArray(list) ? list : [];
+};
+
+const isValidDate = (value?: string | Date | null) => {
+  if (!value) return false;
+  return Number.isFinite(new Date(value).getTime());
+};
+
+const formatTime = (value?: string | Date | null) => {
+  if (!isValidDate(value)) return '';
+  return new Date(value as string | Date).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
+const getInitial = (name?: string | null) => name?.trim()?.charAt(0)?.toUpperCase() || '?';
+
 export default function Instagram() {
-  // Always minimize sidebar when on this page
   const setSidebarCollapsed = useUIStore((s) => s.setSidebarCollapsed);
-  useEffect(() => {
-    setSidebarCollapsed(true);
-    // Optionally, restore on unmount:
-    // return () => setSidebarCollapsed(false);
-  }, [setSidebarCollapsed]);
+  const { toast } = useToast();
 
   const [settings, setSettings] = useState<InstagramSettings>({
     businessAccountId: '',
@@ -45,405 +64,517 @@ export default function Instagram() {
     verifyToken: '',
     webhookUrl: '',
   });
-
   const [messages, setMessages] = useState<InstagramMessage[]>([]);
-  const messagesEndRef = useRef<HTMLDivElement | null>(null);
-  const chatScrollRef = useRef<HTMLDivElement | null>(null);
-  const [showScrollDown, setShowScrollDown] = useState(false);
-  const [autoScroll, setAutoScroll] = useState(true);
   const [conversations, setConversations] = useState<InstagramConversation[]>([]);
-  const [newMessage, setNewMessage] = useState('');
   const [selectedRecipient, setSelectedRecipient] = useState('');
   const [selectedCustomerId, setSelectedCustomerId] = useState('');
-  const [isConnected, setIsConnected] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
+  const [newMessage, setNewMessage] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
+  const [isLoadingConversations, setIsLoadingConversations] = useState(true);
+  const [isLoadingMessages, setIsLoadingMessages] = useState(false);
+  const [isSending, setIsSending] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
+  const [showScrollDown, setShowScrollDown] = useState(false);
+  const [autoScroll, setAutoScroll] = useState(true);
+
   const socketRef = useRef<Socket | null>(null);
+  const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  const selectedCustomerIdRef = useRef('');
+
+  // Keep the socket listener pointed at the currently selected conversation
+  // without reconnecting the socket every time the user changes chats.
+  selectedCustomerIdRef.current = selectedCustomerId;
 
   useEffect(() => {
-    // Initialize WebSocket connection
-    socketRef.current = io(API_BASE_URL, {
+    setSidebarCollapsed(true);
+  }, [setSidebarCollapsed]);
+
+  useEffect(() => {
+    try {
+      const savedSettings = localStorage.getItem('instagram-settings');
+      if (savedSettings) {
+        const parsed = JSON.parse(savedSettings);
+        setSettings((current) => ({ ...current, ...parsed }));
+      }
+    } catch (error) {
+      console.warn('Unable to read saved Instagram settings:', error);
+    }
+  }, []);
+
+  const loadConversations = useCallback(async (showInitialLoading = false) => {
+    if (showInitialLoading) setIsLoadingConversations(true);
+    try {
+      const response = await getInstagramConversations();
+      setConversations(getConversationList(response));
+    } catch (error) {
+      console.error('Failed to load Instagram conversations:', error);
+      if (showInitialLoading) {
+        toast({
+          title: 'Could not load conversations',
+          description: 'Please try again in a moment.',
+          variant: 'destructive',
+        });
+      }
+    } finally {
+      if (showInitialLoading) setIsLoadingConversations(false);
+    }
+  }, [toast]);
+
+  const loadMessages = useCallback(async (customerId: string, showLoading = false) => {
+    if (!customerId) return;
+    if (showLoading) setIsLoadingMessages(true);
+    try {
+      const response = await getInstagramMessages({ customerId });
+      const nextMessages = getMessageList(response);
+      if (selectedCustomerIdRef.current !== customerId) return;
+      setMessages(nextMessages);
+
+      const lastMessage = nextMessages[nextMessages.length - 1];
+      if (lastMessage?.direction === 'inbound' && isValidDate(lastMessage.timestamp)) {
+        const messageTime = new Date(lastMessage.timestamp).getTime();
+        const hasLaterReply = nextMessages.some((message) =>
+          message.direction === 'outbound' &&
+          isValidDate(message.timestamp) &&
+          new Date(message.timestamp).getTime() > messageTime
+        );
+        setIsTyping(Date.now() - messageTime < 30000 && !hasLaterReply);
+      } else {
+        setIsTyping(false);
+      }
+    } catch (error) {
+      console.error('Failed to load Instagram messages:', error);
+    } finally {
+      if (showLoading && selectedCustomerIdRef.current === customerId) {
+        setIsLoadingMessages(false);
+      }
+    }
+  }, []);
+
+  // Socket connection is created once. Polling remains as a fallback if socket
+  // events are temporarily unavailable.
+  useEffect(() => {
+    const socket = io(API_BASE_URL, {
       transports: ['websocket', 'polling'],
     });
+    socketRef.current = socket;
 
-    socketRef.current.on('connect', () => {
-      console.log('Connected to WebSocket');
-      // Join the instagram room to receive events
-      socketRef.current.emit('join', { platform: 'instagram' });
+    socket.on('connect', () => {
+      socket.emit('join', { platform: 'instagram' });
     });
 
-    socketRef.current.on('disconnect', () => {
-      console.log('Disconnected from WebSocket');
+    socket.on('newMessage', (data: any) => {
+      if (data?.platform !== 'instagram' || !data.customerId) return;
+      if (data.customerId !== selectedCustomerIdRef.current) return;
+
+      const incoming: InstagramMessage = {
+        id: String(data.id ?? `${Date.now()}`),
+        from: data.from ?? '',
+        to: data.to ?? '',
+        content: data.content ?? '',
+        timestamp: data.timestamp ?? new Date().toISOString(),
+        direction: data.direction,
+        customerId: data.customerId,
+      };
+
+      setMessages((current) => {
+        if (current.some((message) => message.id === incoming.id)) return current;
+        return [...current, incoming];
+      });
     });
 
-    // Listen for new messages
-    socketRef.current.on('newMessage', (data: any) => {
-      if (data.platform === 'instagram') {
-        if (data.customerId === selectedCustomerId) {
-          setMessages(prev => [...prev, {
-            id: data.id,
-            from: data.from,
-            to: data.to,
-            content: data.content,
-            timestamp: data.timestamp,
-            direction: data.direction,
-            customerId: data.customerId,
-          }]);
-        }
-      }
+    socket.on('conversationUpdate', (data: any) => {
+      if (data?.platform !== 'instagram') return;
+      const next = data?.conversations;
+      if (Array.isArray(next)) setConversations(next);
     });
 
-    // Listen for conversation updates
-    socketRef.current.on('conversationUpdate', (data: any) => {
-      if (data.platform === 'instagram') {
-        setConversations(data.conversations);
-      }
+    socket.on('connect_error', (error) => {
+      console.warn('Instagram live connection unavailable; polling will continue:', error.message);
     });
-
-    // Load conversations from backend
-    const loadConversations = async () => {
-      try {
-        const response = await getInstagramConversations();
-        setConversations(response.conversations);
-      } catch (error) {
-        console.error('Failed to load conversations:', error);
-        // Show empty array if API fails
-        setConversations([]);
-      }
-    };
-
-    loadConversations();
-
-    // Load settings from localStorage or API
-    const savedSettings = localStorage.getItem('instagram-settings');
-    if (savedSettings) {
-      setSettings(JSON.parse(savedSettings));
-    }
-
-    // Set up polling for real-time updates (fallback)
-    const pollInterval = setInterval(() => {
-      loadConversations();
-      if (selectedCustomerId) {
-        const loadConversationMessages = async () => {
-          try {
-            const response = await getInstagramMessages({ customerId: selectedCustomerId });
-            setMessages(response.messages);
-          } catch (error) {
-            console.error('Failed to load conversation messages:', error);
-          }
-        };
-        loadConversationMessages();
-      }
-    }, 3000); // Poll every 3 seconds
 
     return () => {
-      if (socketRef.current) {
-        socketRef.current.disconnect();
-      }
-      clearInterval(pollInterval);
+      socket.removeAllListeners();
+      socket.disconnect();
+      socketRef.current = null;
     };
-  }, [selectedCustomerId]);
+  }, []);
 
-  // Load conversation messages when customer is selected
   useEffect(() => {
-    if (selectedCustomerId) {
-      const loadConversationMessages = async () => {
-        try {
-          const response = await getInstagramMessages({ customerId: selectedCustomerId });
-          setMessages(response.messages);
+    void loadConversations(true);
+    const interval = window.setInterval(() => {
+      void loadConversations(false);
+    }, POLL_INTERVAL);
+    return () => window.clearInterval(interval);
+  }, [loadConversations]);
 
-          // Check if we should show typing indicator
-          // Show typing if the last message is from user (inbound) and no recent AI response
-          const lastMessage = response.messages[response.messages.length - 1];
-          if (lastMessage && lastMessage.direction === 'inbound') {
-            const messageTime = new Date(lastMessage.timestamp).getTime();
-            const now = Date.now();
-            const timeDiff = now - messageTime;
-            // Show typing for up to 30 seconds after user message if no AI response
-            setIsTyping(timeDiff < 30000 && !response.messages.some(m =>
-              m.direction === 'outbound' &&
-              new Date(m.timestamp).getTime() > messageTime
-            ));
-          } else {
-            setIsTyping(false);
-          }
-        } catch (error) {
-          console.error('Failed to load conversation messages:', error);
-        }
-      };
-      loadConversationMessages();
-    }
-  }, [selectedCustomerId]);
-
-  // Scroll to bottom only on first load or if user is at bottom
   useEffect(() => {
-    if (!chatScrollRef.current) return;
-    if (autoScroll) {
-      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+    if (!selectedCustomerId) {
+      setMessages([]);
+      setIsTyping(false);
+      setIsLoadingMessages(false);
+      return;
     }
-  }, [messages, selectedCustomerId]);
 
-  // Handler for scroll events in chat
+    setMessages([]);
+    setIsTyping(false);
+    setAutoScroll(true);
+    setShowScrollDown(false);
+    void loadMessages(selectedCustomerId, true);
+
+    const interval = window.setInterval(() => {
+      void loadMessages(selectedCustomerId, false);
+    }, POLL_INTERVAL);
+
+    return () => window.clearInterval(interval);
+  }, [selectedCustomerId, loadMessages]);
+
+  useEffect(() => {
+    const element = chatScrollRef.current;
+    if (!element || !autoScroll) return;
+    element.scrollTop = element.scrollHeight;
+  }, [messages, selectedCustomerId, autoScroll, isTyping]);
+
   const handleChatScroll = useCallback(() => {
-    const el = chatScrollRef.current;
-    if (!el) return;
-    const threshold = 120;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+    const element = chatScrollRef.current;
+    if (!element) return;
+    const atBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 120;
     setShowScrollDown(!atBottom);
     setAutoScroll(atBottom);
   }, []);
 
-  const handleSaveSettings = () => {
-    localStorage.setItem('instagram-settings', JSON.stringify(settings));
-    // TODO: Save to backend API
-    alert('Settings saved successfully!');
+  const filteredConversations = useMemo(() => {
+    const query = searchTerm.trim().toLowerCase();
+    if (!query) return conversations;
+    return conversations.filter((conversation) =>
+      (conversation.customerName || '').toLowerCase().includes(query) ||
+      (conversation.instagramId || '').toLowerCase().includes(query) ||
+      (conversation.latestMessage || '').toLowerCase().includes(query)
+    );
+  }, [conversations, searchTerm]);
+
+  const activeConversation = useMemo(
+    () => conversations.find((conversation) => conversation.customerId === selectedCustomerId),
+    [conversations, selectedCustomerId]
+  );
+
+  const handleSelectConversation = (conversation: InstagramConversation) => {
+    setSelectedRecipient(conversation.instagramId || '');
+    setSelectedCustomerId(conversation.customerId);
   };
 
-  const handleTestConnection = async () => {
-    setIsLoading(true);
-    try {
-      const result = await testInstagramConnection();
-      setIsConnected(result.success);
-      if (result.success) {
-        alert(`Connection successful: ${result.message}`);
-      } else {
-        alert(`Connection failed: ${result.message}`);
-      }
-    } catch (error) {
-      setIsConnected(false);
-      alert('Connection test failed');
-    } finally {
-      setIsLoading(false);
-    }
+  const handleBackToConversations = () => {
+    setSelectedCustomerId('');
+    setSelectedRecipient('');
+    setMessages([]);
   };
-
-  const { toast } = useToast();
 
   const handleSendMessage = async () => {
-    if (newMessage.trim() && selectedRecipient) {
-      setIsTyping(true);
-      console.log('Frontend: Attempting to send Instagram message to:', selectedRecipient, 'message:', newMessage);
+    const content = newMessage.trim();
+    if (!content || !selectedRecipient || isSending) return;
+
+    const recipient = selectedRecipient;
+    const customerId = selectedCustomerId;
+    setIsSending(true);
+    setNewMessage('');
+
+    try {
+      await sendInstagramMessage(recipient, content);
+
+      // Reload the persisted message so the chat uses the server's message ID
+      // and does not duplicate it when the socket event arrives.
       try {
-        // Send message via API
-        console.log('Frontend: Calling sendInstagramMessage API');
-        const response = await sendInstagramMessage(selectedRecipient, newMessage);
-        console.log('Frontend: API response:', response);
-
-        // Add to local messages list
-        const message: InstagramMessage = {
-          id: Date.now().toString(),
-          from: settings.businessAccountId,
-          to: selectedRecipient,
-          content: newMessage,
-          timestamp: new Date().toISOString(),
-          direction: 'outbound',
-          customerId: selectedCustomerId,
-        };
-        setMessages(prev => [...prev, message]);
-        setNewMessage('');
-
-        // Show success toast
-        toast({
-          title: 'Message sent',
-          description: 'Your message has been sent successfully.',
-        });
-      } catch (error) {
-        console.error('Frontend: Failed to send message:', error);
-        toast({
-          title: 'Failed to send message',
-          description: 'There was an error sending your message. Please try again.',
-          variant: 'destructive',
-        });
-      } finally {
-        setIsTyping(false);
+        const response = await getInstagramMessages({ customerId });
+        if (selectedCustomerIdRef.current === customerId) {
+          setMessages(getMessageList(response));
+        }
+      } catch (reloadError) {
+        console.warn('Message sent, but the conversation could not be refreshed:', reloadError);
+        if (selectedCustomerIdRef.current === customerId) {
+          const fallbackMessage: InstagramMessage = {
+            id: `local-${Date.now()}`,
+            from: settings.businessAccountId || '',
+            to: recipient,
+            content,
+            timestamp: new Date().toISOString(),
+            direction: 'outbound',
+            customerId,
+          };
+          setMessages((current) => [...current, fallbackMessage]);
+        }
       }
-    }
-  };
 
-  const formatInstagramId = (id: string) => {
-    // Instagram IDs are typically numeric, so just return as is
-    return id;
+      if (selectedCustomerIdRef.current === customerId) setAutoScroll(true);
+      toast({
+        title: 'Message sent',
+        description: 'Your Instagram message has been sent successfully.',
+      });
+    } catch (error: any) {
+      if (selectedCustomerIdRef.current === customerId) {
+        setNewMessage(content);
+      }
+      toast({
+        title: 'Failed to send message',
+        description: error?.response?.data?.message || error?.message || 'Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsSending(false);
+    }
   };
 
   return (
-    <div className="w-full h-[90vh] flex flex-col bg-gradient-to-br from-purple-900 via-pink-900 to-orange-900 rounded-xl shadow overflow-hidden">
-      <div className="flex flex-1 min-h-0">
-        {/* Conversations List */}
-        <div className="w-full lg:w-[380px] bg-gradient-to-b from-purple-800 to-pink-800 border-r border-purple-700 flex flex-col min-h-0">
-          <div className="px-4 py-3 border-b border-purple-700 flex items-center gap-2 bg-gradient-to-r from-purple-800 to-pink-800 flex-shrink-0">
-            <InstagramIcon className="h-5 w-5 text-pink-400" />
-            <span className="text-lg font-semibold text-white">Instagram DMs</span>
+    <div className="flex h-[calc(100dvh-7rem)] min-h-[480px] w-full overflow-hidden rounded-lg border border-border bg-background">
+      {/* Conversation list */}
+      <aside
+        className={cn(
+          'w-full shrink-0 flex-col border-r border-border bg-background md:flex md:w-[280px] lg:w-[310px]',
+          selectedCustomerId ? 'hidden' : 'flex'
+        )}
+      >
+        <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-3">
+          <div className="flex items-center gap-2">
+            <InstagramIcon className="h-4 w-4 text-pink-600" />
+            <h1 className="text-sm font-semibold">Instagram messages</h1>
           </div>
-          <div className="flex-1 min-h-0">
-            <div className="divide-y divide-purple-700 overflow-y-auto h-full">
-              {conversations.length === 0 && (
-                <div className="text-center text-white/60 py-8">No conversations</div>
-              )}
-              {conversations.map((conversation) => {
-                const isActive = selectedRecipient === conversation.instagramId;
-                return (
-                  <div
-                    key={conversation.customerId}
-                    onClick={() => {
-                      setSelectedRecipient(conversation.instagramId);
-                      setSelectedCustomerId(conversation.customerId);
-                    }}
-                    className={cn(
-                      'flex items-center gap-3 px-4 py-3 cursor-pointer transition-all',
-                      isActive ? 'bg-purple-700' : 'hover:bg-purple-700/50'
-                    )}
-                    style={{ minHeight: 72 }}
-                  >
-                    <Avatar className="h-12 w-12 shadow">
-                      <AvatarFallback className="bg-gradient-to-r from-pink-400 to-purple-400 text-white font-bold">
-                        {conversation.customerName.charAt(0).toUpperCase()}
-                      </AvatarFallback>
-                    </Avatar>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between">
-                        <span className={cn('font-medium truncate', isActive ? 'text-white' : 'text-white/90')}>
-                          {conversation.customerName}
-                        </span>
-                        <span className="text-xs text-pink-300 ml-2 whitespace-nowrap">
-                          {conversation.latestTimestamp ? new Date(conversation.latestTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between mt-1">
-                        <span className="text-sm text-pink-200 truncate max-w-[160px]">{conversation.latestMessage}</span>
-                        {conversation.unreadCount > 0 && (
-                          <span className="ml-2 bg-pink-500 text-xs text-white rounded-full px-2 py-0.5 font-semibold">
-                            {conversation.unreadCount}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+          <Badge variant="secondary" className="h-5 px-1.5 text-[10px] font-normal">
+            {conversations.length}
+          </Badge>
+        </div>
+
+        <div className="border-b border-border p-2.5">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              placeholder="Search conversations"
+              className="h-8 pl-8 text-xs"
+            />
           </div>
         </div>
 
-        {/* Chat Interface */}
-        <div className="flex flex-col flex-1 min-h-0">
-          {selectedRecipient ? (
-            <>
-              <div className="flex-shrink-0 border-b border-purple-700 px-6 py-4 bg-gradient-to-r from-purple-800 to-pink-800">
-                <div className="flex items-center gap-2">
-                  <Avatar className="h-8 w-8">
-                    <AvatarFallback className="bg-gradient-to-r from-pink-400 to-purple-400 text-white">
-                      {conversations.find(c => c.instagramId === selectedRecipient)?.customerName.charAt(0).toUpperCase() || '?'}
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {isLoadingConversations && conversations.length === 0 ? (
+            <div className="space-y-3 p-3">
+              {[0, 1, 2, 3, 4].map((item) => (
+                <div key={item} className="flex items-center gap-2.5">
+                  <div className="h-9 w-9 animate-pulse rounded-full bg-muted" />
+                  <div className="min-w-0 flex-1 space-y-2">
+                    <div className="h-3 w-2/3 animate-pulse rounded bg-muted" />
+                    <div className="h-2.5 w-full animate-pulse rounded bg-muted" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : filteredConversations.length === 0 ? (
+            <div className="px-4 py-12 text-center">
+              <MessageSquare className="mx-auto mb-2 h-7 w-7 text-muted-foreground/40" />
+              <p className="text-xs font-medium text-foreground">
+                {searchTerm ? 'No matching conversations' : 'No conversations yet'}
+              </p>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {searchTerm ? 'Try another name or message.' : 'New Instagram messages will appear here.'}
+              </p>
+            </div>
+          ) : (
+            filteredConversations.map((conversation) => {
+              const isActive = selectedCustomerId === conversation.customerId;
+              const displayName = conversation.customerName || 'Unknown customer';
+              return (
+                <button
+                  type="button"
+                  key={conversation.customerId}
+                  onClick={() => handleSelectConversation(conversation)}
+                  className={cn(
+                    'flex min-h-[66px] w-full items-center gap-2.5 border-b border-border/70 px-3 py-2 text-left transition-colors',
+                    isActive ? 'bg-muted' : 'hover:bg-muted/60'
+                  )}
+                >
+                  <Avatar className="h-9 w-9 shrink-0">
+                    <AvatarFallback className="bg-pink-100 text-xs font-medium text-pink-700 dark:bg-pink-950 dark:text-pink-300">
+                      {getInitial(displayName)}
                     </AvatarFallback>
                   </Avatar>
-                  <span className="font-semibold text-white">
-                    {conversations.find(c => c.instagramId === selectedRecipient)?.customerName || 'Unknown Customer'}
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center justify-between gap-2">
+                      <span className="truncate text-xs font-medium text-foreground">{displayName}</span>
+                      <span className="shrink-0 text-[10px] text-muted-foreground">
+                        {formatTime(conversation.latestTimestamp)}
+                      </span>
+                    </span>
+                    <span className="mt-1 flex items-center justify-between gap-2">
+                      <span className="truncate text-[11px] text-muted-foreground">
+                        {conversation.latestMessage || 'No message preview'}
+                      </span>
+                      {conversation.unreadCount > 0 && (
+                        <span className="shrink-0 rounded-full bg-pink-600 px-1.5 py-0.5 text-[9px] font-semibold leading-none text-white">
+                          {conversation.unreadCount}
+                        </span>
+                      )}
+                    </span>
                   </span>
-                </div>
-                <p className="text-xs text-pink-300 mt-1">
-                  Instagram ID: {formatInstagramId(selectedRecipient)}
-                </p>
-              </div>
-              <div className="flex-1 min-h-0 relative">
-                <div
-                  ref={chatScrollRef}
-                  className="absolute inset-0 p-4 overflow-y-auto"
-                  style={{ scrollBehavior: 'smooth', background: 'linear-gradient(to bottom, #1a1a2e, #16213e)' }}
-                  onScroll={handleChatScroll}
+                </button>
+              );
+            })
+          )}
+        </div>
+      </aside>
+
+      {/* Chat panel */}
+      <section className={cn('min-w-0 flex-1 flex-col bg-background', selectedCustomerId ? 'flex' : 'hidden md:flex')}>
+        {selectedCustomerId ? (
+          <>
+            <header className="flex h-[54px] shrink-0 items-center justify-between gap-2 border-b border-border px-3">
+              <div className="flex min-w-0 items-center gap-2.5">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 shrink-0 md:hidden"
+                  onClick={handleBackToConversations}
+                  aria-label="Back to conversations"
                 >
-                  <div className="flex flex-col gap-2 pb-8">
-                    {messages.map((message) => (
-                      <div
-                        key={message.id}
-                        className={cn(
-                          'flex',
-                          message.direction === 'outbound' ? 'justify-end' : 'justify-start'
-                        )}
-                      >
-                        <div
-                          className={cn(
-                            'instagram-bubble px-4 py-2 rounded-2xl shadow-lg',
-                            message.direction === 'outbound'
-                              ? 'bg-gradient-to-r from-pink-500 to-purple-500 text-white rounded-br-md'
-                              : 'bg-white dark:bg-gray-800 text-black dark:text-white rounded-bl-md'
-                          )}
-                          style={{ maxWidth: '75%' }}
-                        >
-                          <p className="break-words whitespace-pre-wrap">{message.content}</p>
-                          <p className="text-xs opacity-70 mt-1 text-right">
-                            {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                          </p>
+                  <ArrowLeft className="h-4 w-4" />
+                </Button>
+                <Avatar className="h-8 w-8 shrink-0">
+                  <AvatarFallback className="bg-pink-100 text-xs text-pink-700 dark:bg-pink-950 dark:text-pink-300">
+                    {getInitial(activeConversation?.customerName)}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="min-w-0">
+                  <p className="truncate text-xs font-semibold text-foreground">
+                    {activeConversation?.customerName || 'Unknown customer'}
+                  </p>
+                  <p className="truncate text-[10px] text-muted-foreground">
+                    Instagram ID: {selectedRecipient || activeConversation?.instagramId || 'Unavailable'}
+                  </p>
+                </div>
+              </div>
+              <Badge variant="outline" className="shrink-0 gap-1 border-pink-200 text-[10px] font-normal text-pink-700 dark:border-pink-900 dark:text-pink-300">
+                <InstagramIcon className="h-3 w-3" /> Instagram
+              </Badge>
+            </header>
+
+            <div className="relative min-h-0 flex-1 bg-muted/20">
+              <div
+                ref={chatScrollRef}
+                onScroll={handleChatScroll}
+                className="absolute inset-0 overflow-y-auto px-3 py-3 sm:px-5"
+              >
+                {isLoadingMessages && messages.length === 0 ? (
+                  <div className="flex h-full items-center justify-center">
+                    <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                  </div>
+                ) : messages.length === 0 ? (
+                  <div className="flex h-full flex-col items-center justify-center text-center">
+                    <MessageSquare className="mb-2 h-8 w-8 text-muted-foreground/40" />
+                    <p className="text-xs font-medium text-foreground">No messages yet</p>
+                    <p className="mt-1 text-[11px] text-muted-foreground">Send a message to start the conversation.</p>
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-1.5 pb-3">
+                    {messages.map((message) => {
+                      const outbound = message.direction === 'outbound';
+                      return (
+                        <div key={message.id} className={cn('flex', outbound ? 'justify-end' : 'justify-start')}>
+                          <div
+                            className={cn(
+                              'max-w-[82%] rounded-xl px-3 py-2 sm:max-w-[72%]',
+                              outbound
+                                ? 'rounded-br-sm bg-pink-600 text-white'
+                                : 'rounded-bl-sm border border-border bg-background text-foreground'
+                            )}
+                          >
+                            <p className="whitespace-pre-wrap break-words text-xs leading-relaxed">{message.content}</p>
+                            <p className={cn('mt-1 text-right text-[9px]', outbound ? 'text-white/70' : 'text-muted-foreground')}>
+                              {formatTime(message.timestamp)}
+                            </p>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                     {isTyping && (
                       <div className="flex justify-start">
-                        <div className="bg-white dark:bg-gray-800 rounded-2xl px-4 py-2 text-sm max-w-[75%] shadow-lg">
-                          <div className="flex items-center space-x-1">
-                            <div className="flex space-x-1">
-                              <div className="w-2 h-2 bg-gradient-to-r from-pink-400 to-purple-400 rounded-full animate-bounce"></div>
-                              <div className="w-2 h-2 bg-gradient-to-r from-pink-400 to-purple-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
-                              <div className="w-2 h-2 bg-gradient-to-r from-pink-400 to-purple-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
-                            </div>
-                            <span className="text-xs text-muted-foreground ml-2">AI is typing...</span>
+                        <div className="rounded-xl rounded-bl-sm border border-border bg-background px-3 py-2">
+                          <div className="flex items-center gap-1.5">
+                            <span className="flex gap-0.5">
+                              <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground" />
+                              <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:100ms]" />
+                              <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:200ms]" />
+                            </span>
+                            <span className="text-[10px] text-muted-foreground">AI is typing...</span>
                           </div>
                         </div>
                       </div>
                     )}
-                    <div ref={messagesEndRef} />
                   </div>
-                  {showScrollDown && (
-                    <button
-                      className="absolute right-4 bottom-4 z-10 bg-gradient-to-r from-pink-500 to-purple-500 hover:from-pink-600 hover:to-purple-600 text-white rounded-full shadow-lg p-2 flex items-center justify-center transition"
-                      onClick={() => {
-                        if (chatScrollRef.current) {
-                          chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
-                        }
-                        setAutoScroll(true);
-                      }}
-                      aria-label="Scroll to bottom"
-                    >
-                      <svg width="24" height="24" fill="none" viewBox="0 0 24 24"><path d="M12 5v14m0 0l-7-7m7 7l7-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
-                    </button>
-                  )}
-                </div>
+                )}
               </div>
-              <div className="flex gap-2 items-end p-4 bg-gradient-to-r from-purple-800 to-pink-800 flex-shrink-0 border-t border-purple-700">
-                <Textarea
-                  placeholder="Type a message"
-                  value={newMessage}
-                  onChange={(e) => setNewMessage(e.target.value)}
-                  rows={1}
-                  className="flex-1 rounded-3xl resize-none border-none bg-white dark:bg-gray-800 shadow focus:ring-0"
-                  style={{ minHeight: 40, maxHeight: 120 }}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      handleSendMessage();
-                    }
-                  }}
-                />
+
+              {showScrollDown && (
                 <Button
-                  onClick={handleSendMessage}
-                  disabled={!newMessage.trim()}
+                  type="button"
                   size="icon"
-                  className="rounded-full bg-gradient-to-r from-pink-500 to-purple-500 hover:from-pink-600 hover:to-purple-600 text-white shadow-lg"
-                  style={{ height: 40, width: 40 }}
-                  aria-label="Send"
+                  variant="secondary"
+                  className="absolute bottom-3 right-3 z-10 h-8 w-8 rounded-full border border-border shadow-sm"
+                  onClick={() => {
+                    if (chatScrollRef.current) {
+                      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+                    }
+                    setAutoScroll(true);
+                    setShowScrollDown(false);
+                  }}
+                  aria-label="Scroll to latest message"
                 >
-                  <Send className="h-5 w-5" />
+                  <ChevronDown className="h-4 w-4" />
                 </Button>
-              </div>
-            </>
-          ) : (
-            <div className="flex flex-1 items-center justify-center bg-gradient-to-br from-purple-900 via-pink-900 to-orange-900">
-              <div className="text-center text-white">
-                <InstagramIcon className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                <p>Select a conversation to start chatting</p>
-              </div>
+              )}
             </div>
-          )}
-        </div>
-      </div>
+
+            <form
+              className="flex shrink-0 items-end gap-2 border-t border-border bg-background p-2.5"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void handleSendMessage();
+              }}
+            >
+              <Textarea
+                value={newMessage}
+                onChange={(event) => setNewMessage(event.target.value)}
+                placeholder="Write a message..."
+                rows={1}
+                disabled={isSending}
+                className="max-h-28 min-h-9 flex-1 resize-none rounded-lg px-3 py-2 text-xs shadow-none focus-visible:ring-1"
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault();
+                    void handleSendMessage();
+                  }
+                }}
+              />
+              <Button
+                type="submit"
+                size="icon"
+                disabled={!newMessage.trim() || isSending}
+                className="h-9 w-9 shrink-0 bg-pink-600 text-white hover:bg-pink-700"
+                aria-label="Send Instagram message"
+              >
+                {isSending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+              </Button>
+            </form>
+          </>
+        ) : (
+          <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
+            <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-full bg-pink-50 text-pink-600 dark:bg-pink-950/50 dark:text-pink-300">
+              <InstagramIcon className="h-5 w-5" />
+            </div>
+            <p className="text-sm font-medium text-foreground">Instagram messages</p>
+            <p className="mt-1 max-w-[240px] text-xs text-muted-foreground">
+              Select a conversation to view messages and reply.
+            </p>
+          </div>
+        )}
+      </section>
     </div>
   );
 }

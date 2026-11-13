@@ -15,46 +15,58 @@ import { Badge } from '@/components/ui/badge';
 import { Moon, Sun, LogOut, User, Bell, Menu } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Link } from 'react-router-dom';
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { API_BASE_URL } from '@/config';
 import { apiFetch } from '@/api/apiFetch';
 import { io, Socket } from 'socket.io-client';
 import { toast } from '@/components/ui/sonner';
 
+type NotificationPayload = {
+  type?: string;
+  title?: string;
+  message?: string;
+};
+
 export function Navbar() {
   const { user, logout } = useAuthStore();
-  const { theme, toggleTheme, sidebarCollapsed, setMobileMenuOpen } = useUIStore();
+  const { theme, toggleTheme, setMobileMenuOpen } = useUIStore();
   const isDesktop = useIsDesktop();
+
   const [unreadCount, setUnreadCount] = useState(0);
   const socketRef = useRef<Socket | null>(null);
   const isSocketConnectedRef = useRef(false);
   const fetchUnreadCountRef = useRef<() => Promise<void>>(async () => {});
 
   useEffect(() => {
-    // Fetch unread count
+    let isMounted = true;
+
     const fetchUnreadCount = async () => {
       try {
-        const baseUrl = API_BASE_URL;
-        const response = await apiFetch(`${baseUrl}/api/notifications/unread-count`);
+        const response = await apiFetch(`${API_BASE_URL}/api/notifications/unread-count`);
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
         }
+
         const data = await response.json();
-        setUnreadCount(data.count || 0);
+        if (isMounted) {
+          setUnreadCount(typeof data?.count === 'number' ? data.count : 0);
+        }
       } catch (error: any) {
-        // Only log if it's not a connection error (backend might be down)
-        if (error?.message && !error.message.includes('Failed to fetch') && !error.message.includes('ERR_CONNECTION_REFUSED')) {
+        // The backend may be unavailable while the dashboard is still being used.
+        if (
+          error?.message &&
+          !error.message.includes('Failed to fetch') &&
+          !error.message.includes('ERR_CONNECTION_REFUSED')
+        ) {
           console.error('Failed to fetch unread count:', error);
         }
       }
     };
 
     fetchUnreadCountRef.current = fetchUnreadCount;
+    void fetchUnreadCount();
 
-    fetchUnreadCount();
-
-    // Initialize WebSocket connection for real-time notification updates
-    socketRef.current = io(API_BASE_URL, {
+    const socket = io(API_BASE_URL, {
       transports: ['websocket', 'polling'],
       auth: { token: useAuthStore.getState().token },
       reconnection: true,
@@ -62,32 +74,26 @@ export function Navbar() {
       reconnectionAttempts: 5,
     });
 
-    socketRef.current.on('connect', () => {
-      console.log('Navbar: Connected to WebSocket');
+    socketRef.current = socket;
+
+    socket.on('connect', () => {
       isSocketConnectedRef.current = true;
-      // Join the admin room to receive notification events
-      socketRef.current?.emit('join', { platform: 'admin' });
+      socket.emit('join', { platform: 'admin' });
       void fetchUnreadCountRef.current();
     });
 
-    socketRef.current.on('disconnect', () => {
-      console.log('Navbar: Disconnected from WebSocket');
+    socket.on('disconnect', () => {
       isSocketConnectedRef.current = false;
     });
 
-    socketRef.current.on('connect_error', (error) => {
-      // Suppress connection error logs when backend is not available
-      // This is expected when the backend server is not running
+    socket.on('connect_error', (error) => {
       if (error.message.includes('xhr poll error') || error.message.includes('websocket error')) {
-        // Silently handle connection errors - backend might be down
         return;
       }
       console.error('Navbar: WebSocket connection error:', error);
     });
 
-    // Listen for notification count updates
-    socketRef.current.on('notificationCountUpdate', (payload?: { count?: number }) => {
-      console.log('Navbar: Notification count update received');
+    socket.on('notificationCountUpdate', (payload?: { count?: number }) => {
       if (typeof payload?.count === 'number') {
         setUnreadCount(payload.count);
       } else {
@@ -95,13 +101,12 @@ export function Navbar() {
       }
     });
 
-    // Listen for new notifications
-    socketRef.current.on('newNotification', (notification: { type?: string; title?: string; message?: string }) => {
-      console.log('Navbar: New notification received', notification);
+    socket.on('newNotification', (notification: NotificationPayload) => {
       setUnreadCount((prev) => prev + 1);
 
       const title = notification?.title || 'New notification';
       const description = notification?.message;
+
       if (notification?.type === 'escalation') {
         toast.warning(title, { description });
       } else {
@@ -109,8 +114,8 @@ export function Navbar() {
       }
     });
 
-    // Fallback polling only when websocket is down and tab is visible.
-    const interval = setInterval(() => {
+    // Poll only while the socket is disconnected and the tab is visible.
+    const interval = window.setInterval(() => {
       if (!isSocketConnectedRef.current && document.visibilityState === 'visible') {
         void fetchUnreadCountRef.current();
       }
@@ -123,114 +128,139 @@ export function Navbar() {
     };
 
     document.addEventListener('visibilitychange', onVisibilityChange);
-    
+
     return () => {
-      clearInterval(interval);
+      isMounted = false;
+      window.clearInterval(interval);
       document.removeEventListener('visibilitychange', onVisibilityChange);
-      if (socketRef.current) {
-        socketRef.current.disconnect();
+      isSocketConnectedRef.current = false;
+      socket.removeAllListeners();
+      socket.disconnect();
+      if (socketRef.current === socket) {
+        socketRef.current = null;
       }
     };
   }, []);
 
-  const initials = user?.name
-    ?.split(' ')
-    .map((n) => n[0])
-    .join('')
-    .toUpperCase() || 'AU';
+  const initials =
+    user?.name
+      ?.trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((part) => part[0])
+      .join('')
+      .slice(0, 2)
+      .toUpperCase() || 'AU';
 
   return (
     <header
       className={cn(
-        'sticky top-0 w-full z-30 h-16 border-b border-border/50 bg-card/80 backdrop-blur-xl supports-[backdrop-filter]:bg-card/60 transition-all duration-300 shadow-sm',
-        'ml-4 sm:ml-6 lg:ml-0'
+        'sticky top-0 z-30 h-14 w-full border-b border-border bg-background/95 supports-[backdrop-filter]:bg-background/85 backdrop-blur',
+        'transition-colors'
       )}
     >
-      <div className="flex h-full items-center justify-between px-4 sm:px-6">
-        {/* Left side - Hamburger (mobile) or Title */}
-        <div className="flex items-center gap-3">
+      <div className="flex h-full items-center justify-between gap-3 px-3 sm:px-5">
+        <div className="flex min-w-0 items-center gap-2.5">
           {!isDesktop && (
             <Button
               variant="ghost"
               size="icon"
               onClick={() => setMobileMenuOpen(true)}
-              className="tap-target -ml-2 hover:bg-accent rounded-lg transition-all"
-              aria-label="Open menu"
+              className="h-9 w-9 shrink-0 text-muted-foreground hover:text-foreground"
+              aria-label="Open navigation menu"
             >
-              <Menu className="h-5 w-5" />
+              <Menu className="h-[18px] w-[18px]" />
             </Button>
           )}
-          <h2 className="text-base sm:text-lg font-bold bg-gradient-to-r from-foreground to-foreground/70 bg-clip-text text-transparent truncate max-w-[200px] sm:max-w-none">
-            Fiesta House
-          </h2>
+
+          <div className="min-w-0">
+            <h2 className="truncate text-sm font-semibold tracking-tight text-foreground sm:text-[15px]">
+              Fiesta House
+            </h2>
+            <p className="hidden text-[11px] leading-4 text-muted-foreground sm:block">
+              Business administration
+            </p>
+          </div>
         </div>
 
-        {/* Right side - Actions */}
-        <div className="flex items-center gap-1 sm:gap-2">
-          {/* Notifications */}
-          <Link to="/notifications">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="relative text-muted-foreground hover:text-foreground hover:bg-accent tap-target transition-all duration-200 hover:scale-110 rounded-lg"
-              aria-label={`Notifications ${unreadCount > 0 ? `(${unreadCount} unread)` : ''}`}
-            >
-              <Bell className="h-5 w-5 transition-transform group-hover:animate-pulse-soft" />
+        <div className="flex shrink-0 items-center gap-1">
+          <Button
+            asChild
+            variant="ghost"
+            size="icon"
+            className="relative h-9 w-9 text-muted-foreground hover:text-foreground"
+            aria-label={`Notifications${unreadCount > 0 ? `, ${unreadCount} unread` : ''}`}
+          >
+            <Link to="/notifications">
+              <Bell className="h-[18px] w-[18px]" />
               {unreadCount > 0 && (
                 <Badge
-                  className="absolute -right-1 -top-1 h-5 min-w-5 px-1.5 flex items-center justify-center bg-gradient-to-r from-destructive to-destructive/90 text-destructive-foreground text-xs font-bold animate-scaleIn shadow-lg"
-                  variant="default"
+                  variant="destructive"
+                  className="absolute -right-0.5 -top-0.5 flex h-[17px] min-w-[17px] items-center justify-center rounded-full border-2 border-background px-1 text-[9px] font-semibold leading-none"
                 >
                   {unreadCount > 99 ? '99+' : unreadCount}
                 </Badge>
               )}
-            </Button>
-          </Link>
+            </Link>
+          </Button>
 
-          {/* Theme toggle */}
           <Button
             variant="ghost"
             size="icon"
             onClick={toggleTheme}
-            className="text-muted-foreground hover:text-foreground hover:bg-accent tap-target transition-all duration-200 hover:scale-110 hover:rotate-12 rounded-lg"
+            className="h-9 w-9 text-muted-foreground hover:text-foreground"
             aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
+            title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
           >
             {theme === 'light' ? (
-              <Moon className="h-5 w-5 transition-transform" />
+              <Moon className="h-[18px] w-[18px]" />
             ) : (
-              <Sun className="h-5 w-5 transition-transform" />
+              <Sun className="h-[18px] w-[18px]" />
             )}
           </Button>
 
-          {/* User menu */}
+          <div className="mx-1 h-6 w-px bg-border" />
+
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" className="relative h-10 w-10 rounded-full tap-target group hover:ring-2 hover:ring-primary/20 transition-all duration-200">
-                <Avatar className="h-10 w-10 ring-2 ring-transparent group-hover:ring-primary/30 transition-all shadow-md">
-                  <AvatarFallback className="bg-gradient-to-br from-primary via-primary/90 to-primary/80 text-white font-bold shadow-lg">
+              <Button
+                variant="ghost"
+                className="h-9 gap-2 rounded-md px-1.5 pl-1.5 hover:bg-muted"
+                aria-label="Open user menu"
+              >
+                <Avatar className="h-7 w-7">
+                  <AvatarFallback className="bg-primary/10 text-[10px] font-semibold text-primary">
                     {initials}
                   </AvatarFallback>
                 </Avatar>
+                <span className="hidden max-w-32 truncate text-xs font-medium text-foreground sm:block">
+                  {user?.name || 'Account'}
+                </span>
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-56 animate-scaleIn shadow-xl border-border/50 backdrop-blur-sm">
-              <DropdownMenuLabel>
-                <div className="flex flex-col space-y-1">
-                  <p className="text-sm font-semibold">{user?.name}</p>
-                  <p className="text-xs text-muted-foreground truncate">{user?.email}</p>
+
+            <DropdownMenuContent align="end" sideOffset={8} className="w-56">
+              <DropdownMenuLabel className="font-normal">
+                <div className="flex min-w-0 flex-col gap-0.5">
+                  <span className="truncate text-sm font-medium text-foreground">
+                    {user?.name || 'Admin'}
+                  </span>
+                  <span className="truncate text-xs text-muted-foreground">
+                    {user?.email || ''}
+                  </span>
                 </div>
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
-              <DropdownMenuItem className="cursor-pointer tap-target transition-colors">
-                <User className="mr-2 h-4 w-4" />
+              <DropdownMenuItem disabled className="gap-2 text-muted-foreground">
+                <User className="h-4 w-4" />
                 Profile
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 onClick={logout}
-                className="text-destructive focus:text-destructive cursor-pointer tap-target transition-colors"
+                className="gap-2 text-destructive focus:text-destructive"
               >
-                <LogOut className="mr-2 h-4 w-4" />
+                <LogOut className="h-4 w-4" />
                 Log out
               </DropdownMenuItem>
             </DropdownMenuContent>
