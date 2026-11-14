@@ -55,10 +55,14 @@ const InvoiceCard: React.FC<InvoiceCardProps> = ({
         }
     };
 
-    const handleDownloadInvoice = (invoice: Invoice) => {
-        const downloadUrl = invoicesApi.downloadInvoice(invoice.id);
-        window.open(downloadUrl, '_blank');
-        toast.success('Invoice download started');
+        const handleDownloadInvoice = async (invoice: Invoice) => {
+        try {
+            await invoicesApi.downloadInvoice(invoice.id);
+            toast.success(`Invoice ${invoice.invoiceNumber} downloaded`);
+        } catch (error) {
+            console.error('Error downloading invoice:', error);
+            toast.error('Failed to download invoice. Please try again.');
+        }
     };
 
     const getStatusColor = (status: string) => {

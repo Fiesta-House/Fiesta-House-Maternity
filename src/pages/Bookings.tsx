@@ -371,6 +371,23 @@ export default function Bookings() {
     }
   };
 
+  const handleDownloadInvoice = async (invoice: Invoice) => {
+    try {
+      await invoicesApi.downloadInvoice(invoice.id);
+      toast({
+        title: 'Invoice downloaded',
+        description: `Invoice ${invoice.invoiceNumber} has been downloaded.`,
+      });
+    } catch (error) {
+      console.error('Error downloading invoice:', error);
+      toast({
+        title: 'Invoice download failed',
+        description: 'Please try again.',
+        variant: 'destructive',
+      });
+    }
+  };
+
   const handleSendInvoice = async (invoiceId: string, customerName: string) => {
     try {
       await invoicesApi.sendInvoice(invoiceId);
@@ -731,7 +748,7 @@ export default function Bookings() {
         }
         return (
           <div className="flex items-center gap-1" onClick={(event) => event.stopPropagation()}>
-            <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => window.open(invoicesApi.downloadInvoice(invoice.id), '_blank')} title="Download invoice">
+            <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => void handleDownloadInvoice(invoice)} title="Download invoice">
               <Download className="h-3.5 w-3.5" />
             </Button>
             <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => void handleSendInvoice(invoice.id, row.customerName)} disabled={invoice.status === 'sent'}>
@@ -751,7 +768,7 @@ export default function Bookings() {
             </Button>
           </PopoverTrigger>
           <PopoverContent className="w-48 p-1" align="end" onClick={(event) => event.stopPropagation()}>
-            <Button variant="ghost" size="sm" className="h-8 w-full justify-start text-xs" onClick={() => void fetchBookingDetails(row)}>
+            <Button variant="ghost" size="sm" className="h-8 w-full justify-start text-xs" onClick={() => navigate(`/bookings/${row.id}`)}>
               <Info className="mr-2 h-3.5 w-3.5" />Booking details
             </Button>
             <Button
@@ -918,7 +935,7 @@ export default function Bookings() {
                   <button
                     key={booking.id}
                     type="button"
-                    onClick={() => void fetchBookingDetails(booking)}
+                    onClick={() => navigate(`/bookings/${booking.id}`)}
                     className="flex w-full items-center gap-3 px-3 py-2 text-left transition-colors hover:bg-muted/40"
                   >
                     <span className="w-[68px] shrink-0 text-xs font-medium tabular-nums text-foreground">{booking.time}</span>
@@ -947,7 +964,7 @@ export default function Bookings() {
           <span className="text-xs tabular-nums text-muted-foreground">{filteredBookings.length} shown</span>
         </div>
         <div className="overflow-x-auto">
-          <DataTable data={filteredBookings} columns={columns} onRowClick={(booking) => void fetchBookingDetails(booking)} />
+          <DataTable data={filteredBookings} columns={columns} onRowClick={(booking) => navigate(`/bookings/${booking.id}`)} />
         </div>
       </section>
 
@@ -1137,7 +1154,7 @@ export default function Bookings() {
                 <section className="flex flex-wrap items-center justify-between gap-3 border-y border-border py-2">
                   <div><p className="text-sm font-medium">Invoice #{invoices[selectedBookingDetails.id].invoiceNumber}</p><p className="text-xs text-muted-foreground">Total: KSh {invoices[selectedBookingDetails.id].total?.toLocaleString()}</p></div>
                   <div className="flex gap-1.5">
-                    <Button size="sm" variant="outline" className="h-8" onClick={() => window.open(invoicesApi.downloadInvoice(invoices[selectedBookingDetails.id].id), '_blank')}><Download className="mr-1.5 h-3.5 w-3.5" />Download</Button>
+                    <Button size="sm" variant="outline" className="h-8" onClick={() => void handleDownloadInvoice(invoices[selectedBookingDetails.id])}><Download className="mr-1.5 h-3.5 w-3.5" />Download</Button>
                     <Button size="sm" className="h-8" onClick={() => void handleSendInvoice(invoices[selectedBookingDetails.id].id, selectedBookingDetails.customerName)} disabled={invoices[selectedBookingDetails.id].status === 'sent'}><Send className="mr-1.5 h-3.5 w-3.5" />{invoices[selectedBookingDetails.id].status === 'sent' ? 'Sent' : 'Send'}</Button>
                   </div>
                 </section>
