@@ -1,0 +1,878 @@
+import { useCallback, useEffect, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import {
+  ArrowLeft,
+  Bell,
+  CalendarDays,
+  Download,
+  Edit,
+  FileText,
+  History,
+  MessageCircle,
+  Send,
+  Sparkles,
+  UserRound,
+} from 'lucide-react';
+
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Calendar } from '@/components/ui/calendar';
+import { Label } from '@/components/ui/label';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+
+import { useToast } from '@/hooks/use-toast';
+
+import {
+  getBooking,
+  getPackages,
+  getAvailableHours,
+  updateBooking,
+  type Booking as BookingRecord,
+  type Package,
+} from '@/api/bookings';
+
+import { invoicesApi, type Invoice } from '@/api/invoices';
+import { remindersApi, type Reminder } from '@/api/reminders';
+import { followupsApi, type Followup } from '@/api/followups';
+
+import api from '@/api/apiInstance';
+import { API_BASE_URL as API_BASE } from '@/config';
+
+interface BookingHour {
+  time: string;
+  available: boolean;
+}
+
+function formatDate(date: Date): string {
+  return date.toLocaleDateString('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  });
+}
+
+function formatTime(date: Date): string {
+  return date.toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function dateInputValue(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function toDateTime(date: Date, time: string): string {
+  const value = new Date(date);
+  const [hours, minutes] = time.split(':').map(Number);
+  value.setHours(hours, minutes, 0, 0);
+  return value.toISOString();
+}
+
+function getStatusClass(status: string): string {
+  switch (status) {
+    case 'confirmed':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    case 'provisional':
+      return 'border-amber-200 bg-amber-50 text-amber-700';
+    case 'cancelled':
+      return 'border-red-200 bg-red-50 text-red-700';
+    default:
+      return 'border-border bg-muted text-muted-foreground';
+  }
+}
+
+function formatAmount(amount: number): string {
+  return `KSh ${Number(amount || 0).toLocaleString()}`;
+}
+
+export default function BookingDetails() {
+  const { bookingId } = useParams<{ bookingId: string }>();
+  const navigate = useNavigate();
+  const { toast } = useToast();
+
+  const [booking, setBooking] = useState<BookingRecord | null>(null);
+  const [payments, setPayments] = useState<any[]>([]);
+  const [reminders, setReminders] = useState<Reminder[]>([]);
+  const [followups, setFollowups] = useState<Followup[]>([]);
+  const [invoice, setInvoice] = useState<Invoice | null>(null);
+  const [packages, setPackages] = useState<Package[]>([]);
+
+  const [loading, setLoading] = useState(true);
+  const [generatingInvoice, setGeneratingInvoice] = useState(false);
+  const [sendingInvoice, setSendingInvoice] = useState(false);
+
+  const [editOpen, setEditOpen] = useState(false);
+  const [rescheduleDate, setRescheduleDate] = useState<Date>();
+  const [rescheduleTime, setRescheduleTime] = useState('');
+  const [rescheduleService, setRescheduleService] = useState('');
+  const [availableHours, setAvailableHours] = useState<BookingHour[]>([]);
+  const [loadingHours, setLoadingHours] = useState(false);
+  const [savingBooking, setSavingBooking] = useState(false);
+
+  const fetchBookingDetails = useCallback(async () => {
+    if (!bookingId) return;
+
+    setLoading(true);
+
+    try {
+      const bookingData = await getBooking(bookingId);
+      setBooking(bookingData);
+
+      if (Array.isArray(bookingData.payments)) {
+        setPayments(bookingData.payments);
+      } else {
+        try {
+          const response = await api.get(`${API_BASE}/api/payments`, {
+            params: { bookingId },
+          });
+          setPayments(Array.isArray(response.data) ? response.data : []);
+        } catch {
+          setPayments([]);
+        }
+      }
+
+      const [reminderRows, followupRows, invoiceRows] = await Promise.all([
+        remindersApi.getBookingReminders(bookingId).catch(() => []),
+        followupsApi.getBookingFollowups(bookingId).catch(() => []),
+        invoicesApi.getInvoicesByBooking(bookingId).catch(() => []),
+      ]);
+
+      setReminders(Array.isArray(reminderRows) ? reminderRows : []);
+      setFollowups(Array.isArray(followupRows) ? followupRows : []);
+      setInvoice(Array.isArray(invoiceRows) ? invoiceRows[0] || null : null);
+    } catch {
+      toast({
+        title: 'Could not load booking',
+        description: 'Please check the booking and try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setLoading(false);
+    }
+  }, [bookingId, toast]);
+
+  useEffect(() => {
+    void fetchBookingDetails();
+
+    getPackages()
+      .then((rows) => setPackages(Array.isArray(rows) ? rows : []))
+      .catch(() => setPackages([]));
+  }, [fetchBookingDetails]);
+
+  useEffect(() => {
+    if (!rescheduleDate || !editOpen || !rescheduleService) {
+      setAvailableHours([]);
+      return;
+    }
+
+    let active = true;
+    setLoadingHours(true);
+
+    getAvailableHours(dateInputValue(rescheduleDate), rescheduleService)
+      .then((hours) => {
+        if (active) {
+          setAvailableHours(Array.isArray(hours) ? hours : []);
+        }
+      })
+      .catch(() => {
+        if (active) setAvailableHours([]);
+      })
+      .finally(() => {
+        if (active) setLoadingHours(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [rescheduleDate, rescheduleService, editOpen]);
+
+  const openEdit = () => {
+    if (!booking) return;
+
+    const currentDate = new Date(booking.dateTime);
+
+    setRescheduleDate(currentDate);
+    setRescheduleTime(
+      `${String(currentDate.getHours()).padStart(2, '0')}:${String(currentDate.getMinutes()).padStart(2, '0')}`,
+    );
+    setRescheduleService(booking.service);
+    setEditOpen(true);
+  };
+
+  const handleReschedule = async () => {
+    if (!booking || !rescheduleDate || !rescheduleTime) {
+      toast({
+        title: 'Select a date and time',
+        description: 'Both are required to reschedule a booking.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setSavingBooking(true);
+
+    try {
+      await updateBooking(booking.id, {
+        dateTime: toDateTime(rescheduleDate, rescheduleTime),
+        service: rescheduleService || booking.service,
+      });
+
+      toast({
+        title: 'Booking updated',
+        description: 'The new date and time have been saved.',
+      });
+
+      setEditOpen(false);
+      await fetchBookingDetails();
+    } catch (error: any) {
+      toast({
+        title: 'Could not update booking',
+        description: error.response?.data?.message || 'Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setSavingBooking(false);
+    }
+  };
+
+  const handleSendReminder = async (reminderId: string) => {
+    try {
+      await remindersApi.sendReminder(reminderId);
+      toast({ title: 'Reminder sent' });
+
+      if (bookingId) {
+        const rows = await remindersApi.getBookingReminders(bookingId);
+        setReminders(Array.isArray(rows) ? rows : []);
+      }
+    } catch {
+      toast({
+        title: 'Reminder could not be sent',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleSendFollowup = async (followupId: string) => {
+    try {
+      await followupsApi.sendFollowup(followupId);
+      toast({ title: 'Follow-up sent' });
+
+      if (bookingId) {
+        const rows = await followupsApi.getBookingFollowups(bookingId);
+        setFollowups(Array.isArray(rows) ? rows : []);
+      }
+    } catch {
+      toast({
+        title: 'Follow-up could not be sent',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleGenerateInvoice = async () => {
+    if (!bookingId) return;
+
+    setGeneratingInvoice(true);
+
+    try {
+      const generated = await invoicesApi.generateInvoice(bookingId);
+      setInvoice(generated);
+      toast({
+        title: 'Invoice generated',
+        description: `Invoice ${generated.invoiceNumber} is ready.`,
+      });
+    } catch {
+      toast({
+        title: 'Invoice could not be generated',
+        description: 'Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setGeneratingInvoice(false);
+    }
+  };
+
+  const handleDownloadInvoice = async () => {
+    if (!invoice) return;
+
+    try {
+      await invoicesApi.downloadInvoice(invoice.id);
+      toast({
+        title: 'Invoice downloaded',
+        description: `Invoice ${invoice.invoiceNumber} has been downloaded.`,
+      });
+    } catch (error) {
+      console.error('Error downloading invoice:', error);
+      toast({
+        title: 'Invoice download failed',
+        description: 'Please try again.',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleSendInvoice = async () => {
+    if (!invoice) return;
+
+    setSendingInvoice(true);
+
+    try {
+      await invoicesApi.sendInvoice(invoice.id);
+      setInvoice({
+        ...invoice,
+        status: 'sent',
+        sentAt: new Date().toISOString(),
+      });
+      toast({ title: 'Invoice sent' });
+    } catch {
+      toast({
+        title: 'Invoice could not be sent',
+        description: 'Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setSendingInvoice(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex min-h-[50vh] items-center justify-center">
+        <div className="h-6 w-6 animate-spin rounded-full border-2 border-muted border-t-primary" />
+      </div>
+    );
+  }
+
+  if (!booking) {
+    return (
+      <div className="space-y-4">
+        <Button variant="ghost" size="sm" onClick={() => navigate('/bookings')}>
+          <ArrowLeft className="mr-2 h-4 w-4" />
+          Back to bookings
+        </Button>
+        <div className="rounded-md border border-border py-12 text-center">
+          <p className="text-sm font-medium">Booking not found</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            This booking may have been removed or is unavailable.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const bookingDate = new Date(booking.dateTime);
+  const addons = Array.isArray(booking.bookingAddons) ? booking.bookingAddons : [];
+  const addonsTotal = addons.reduce(
+    (sum, addon) => sum + (Number(addon.totalPrice) || 0),
+    0,
+  );
+
+  const successfulPayments = payments.filter(
+    (payment) => payment.status === 'success',
+  );
+
+  const pendingPayments = payments.filter(
+    (payment) => payment.status === 'pending',
+  );
+
+  const successfulPaymentsTotal = successfulPayments.reduce(
+    (sum, payment) => sum + (Number(payment.amount) || 0),
+    0,
+  );
+
+  const pendingPaymentsTotal = pendingPayments.reduce(
+    (sum, payment) => sum + (Number(payment.amount) || 0),
+    0,
+  );
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            onClick={() => navigate('/bookings')}
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+          <div>
+            <h1 className="text-lg font-semibold tracking-tight">Booking details</h1>
+            <p className="text-xs text-muted-foreground">
+              Booking #{booking.id.slice(-8)}
+            </p>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="outline" onClick={openEdit}>
+            <Edit className="mr-1.5 h-3.5 w-3.5" />
+            Edit / reschedule
+          </Button>
+          {booking.customerId && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => navigate(`/customers/${booking.customerId}`)}
+            >
+              <History className="mr-1.5 h-3.5 w-3.5" />
+              Customer history
+            </Button>
+          )}
+        </div>
+      </div>
+
+      <section className="rounded-md border border-border">
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-4 py-3">
+          <div>
+            <h2 className="text-sm font-semibold">
+              {booking.customer?.name || 'Unknown customer'}
+            </h2>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {booking.customer?.phone || 'No phone number'}
+            </p>
+          </div>
+          <Badge
+            variant="outline"
+            className={`capitalize ${getStatusClass(booking.status)}`}
+          >
+            {booking.status}
+          </Badge>
+        </div>
+
+        <div className="grid grid-cols-2 gap-x-5 gap-y-4 p-4 sm:grid-cols-4">
+          <div>
+            <Label className="text-[11px] text-muted-foreground">Package</Label>
+            <p className="mt-1 text-sm font-medium">{booking.service}</p>
+          </div>
+          <div>
+            <Label className="text-[11px] text-muted-foreground">Date</Label>
+            <p className="mt-1 text-sm">{formatDate(bookingDate)}</p>
+          </div>
+          <div>
+            <Label className="text-[11px] text-muted-foreground">Time</Label>
+            <p className="mt-1 text-sm">{formatTime(bookingDate)}</p>
+          </div>
+          <div>
+            <Label className="text-[11px] text-muted-foreground">Booking ID</Label>
+            <p className="mt-1 truncate text-sm font-mono">{booking.id}</p>
+          </div>
+        </div>
+      </section>
+
+      <section className="space-y-2">
+        <div className="flex items-center justify-between border-b border-border pb-2">
+          <h2 className="text-sm font-semibold">Payments</h2>
+          <span className="text-xs text-muted-foreground">
+            {payments.length} records
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 rounded-md border border-border p-3 sm:grid-cols-3">
+          <div>
+            <p className="text-[11px] text-muted-foreground">Received</p>
+            <p className="mt-1 text-sm font-semibold tabular-nums text-emerald-700">
+              {formatAmount(successfulPaymentsTotal)}
+            </p>
+          </div>
+
+          <div>
+            <p className="text-[11px] text-muted-foreground">Pending</p>
+            <p className="mt-1 text-sm font-semibold tabular-nums">
+              {formatAmount(pendingPaymentsTotal)}
+            </p>
+            <p className="text-[10px] text-muted-foreground">
+              {pendingPayments.length} pending {pendingPayments.length === 1 ? 'attempt' : 'attempts'}
+            </p>
+          </div>
+
+          <div>
+            <p className="text-[11px] text-muted-foreground">Payment records</p>
+            <p className="mt-1 text-sm font-semibold tabular-nums">
+              {payments.length}
+            </p>
+          </div>
+        </div>
+
+        {payments.length === 0 ? (
+          <p className="py-3 text-xs text-muted-foreground">No payments recorded.</p>
+        ) : (
+          <div className="divide-y divide-border rounded-md border border-border">
+            {payments.map((payment) => (
+              <div
+                key={payment.id}
+                className="flex items-center justify-between gap-3 px-3 py-2"
+              >
+                <div>
+                  <p className="text-sm font-medium tabular-nums">
+                    {formatAmount(payment.amount)}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {payment.createdAt
+                      ? new Date(payment.createdAt).toLocaleDateString('en-GB')
+                      : 'Date unavailable'}
+                    {payment.mpesaReceipt ? ` · ${payment.mpesaReceipt}` : ''}
+                  </p>
+                </div>
+                <Badge
+                  variant={payment.status === 'success' ? 'default' : 'secondary'}
+                  className="capitalize"
+                >
+                  {payment.status}
+                </Badge>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section className="space-y-2">
+        <div className="flex items-center justify-between border-b border-border pb-2">
+          <h2 className="flex items-center gap-2 text-sm font-semibold">
+            <Sparkles className="h-3.5 w-3.5" />
+            Add-ons
+          </h2>
+          <span className="text-xs text-muted-foreground">
+            {addons.length} items
+          </span>
+        </div>
+
+        {addons.length === 0 ? (
+          <p className="py-3 text-xs text-muted-foreground">No add-ons recorded.</p>
+        ) : (
+          <div className="divide-y divide-border rounded-md border border-border">
+            {addons.map((addon) => (
+              <div
+                key={addon.id}
+                className="flex items-center justify-between gap-3 px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-sm">
+                    {addon.name}
+                    {addon.quantity > 1 ? ` ×${addon.quantity}` : ''}
+                  </p>
+                  {addon.note && (
+                    <p className="text-xs text-muted-foreground">{addon.note}</p>
+                  )}
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <Badge variant="secondary" className="text-[10px] capitalize">
+                    {addon.status}
+                  </Badge>
+                  <span className="text-xs font-medium tabular-nums">
+                    {addon.totalPrice > 0 ? formatAmount(addon.totalPrice) : 'Quoted'}
+                  </span>
+                </div>
+              </div>
+            ))}
+            {addonsTotal > 0 && (
+              <div className="flex justify-between px-3 py-2 text-xs font-semibold">
+                <span>Add-ons total</span>
+                <span className="tabular-nums">{formatAmount(addonsTotal)}</span>
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+
+      <div className="grid gap-5 sm:grid-cols-2">
+        <section className="space-y-2">
+          <div className="flex items-center justify-between border-b border-border pb-2">
+            <h2 className="flex items-center gap-2 text-sm font-semibold">
+              <Bell className="h-3.5 w-3.5" />
+              Reminders
+            </h2>
+            <span className="text-xs text-muted-foreground">{reminders.length}</span>
+          </div>
+
+          {reminders.length === 0 ? (
+            <p className="py-2 text-xs text-muted-foreground">
+              No reminders scheduled.
+            </p>
+          ) : (
+            reminders.map((reminder) => (
+              <div
+                key={reminder.id}
+                className="flex items-center justify-between gap-2 border-b border-border/60 py-2 last:border-0"
+              >
+                <div className="min-w-0">
+                  <p className="text-xs font-medium">{reminder.type} reminder</p>
+                  <p className="text-xs text-muted-foreground">
+                    {new Date(reminder.scheduledFor).toLocaleString('en-GB')}
+                  </p>
+                </div>
+                {reminder.status === 'pending' ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 shrink-0 px-2 text-[11px]"
+                    onClick={() => void handleSendReminder(reminder.id)}
+                  >
+                    <Send className="mr-1 h-3 w-3" />
+                    Send
+                  </Button>
+                ) : (
+                  <Badge variant="secondary" className="text-[10px] capitalize">
+                    {reminder.status}
+                  </Badge>
+                )}
+              </div>
+            ))
+          )}
+        </section>
+
+        <section className="space-y-2">
+          <div className="flex items-center justify-between border-b border-border pb-2">
+            <h2 className="flex items-center gap-2 text-sm font-semibold">
+              <MessageCircle className="h-3.5 w-3.5" />
+              Follow-ups
+            </h2>
+            <span className="text-xs text-muted-foreground">{followups.length}</span>
+          </div>
+
+          {followups.length === 0 ? (
+            <p className="py-2 text-xs text-muted-foreground">
+              No follow-ups scheduled.
+            </p>
+          ) : (
+            followups.map((followup) => (
+              <div
+                key={followup.id}
+                className="flex items-center justify-between gap-2 border-b border-border/60 py-2 last:border-0"
+              >
+                <div className="min-w-0">
+                  <p className="text-xs font-medium capitalize">
+                    {followup.type.replace('_', ' ')} follow-up
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {new Date(followup.scheduledFor).toLocaleString('en-GB')}
+                  </p>
+                </div>
+                {followup.status === 'pending' ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 shrink-0 px-2 text-[11px]"
+                    onClick={() => void handleSendFollowup(followup.id)}
+                  >
+                    <Send className="mr-1 h-3 w-3" />
+                    Send
+                  </Button>
+                ) : (
+                  <Badge variant="secondary" className="text-[10px] capitalize">
+                    {followup.status}
+                  </Badge>
+                )}
+              </div>
+            ))
+          )}
+        </section>
+      </div>
+
+      <section className="flex flex-wrap items-center justify-between gap-3 border-y border-border py-3">
+        <div className="flex items-center gap-2">
+          <FileText className="h-4 w-4 text-muted-foreground" />
+          <div>
+            <p className="text-sm font-medium">
+              {invoice ? `Invoice #${invoice.invoiceNumber}` : 'Invoice'}
+            </p>
+            {invoice ? (
+              <div className="mt-1 space-y-1 text-xs text-muted-foreground">
+                <p>
+                  Total billed: <span className="font-medium text-foreground">{formatAmount(invoice.total)}</span>
+                </p>
+                <p>
+                  Deposit paid: <span className="font-medium text-foreground">{formatAmount(invoice.depositPaid)}</span>
+                </p>
+                <p>
+                  Balance due: <span className="font-medium text-foreground">{formatAmount(invoice.balanceDue)}</span>
+                </p>
+                <p className="capitalize">Status: {invoice.status}</p>
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">No invoice generated yet</p>
+            )}
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {invoice ? (
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => void handleDownloadInvoice()}
+              >
+                <Download className="mr-1.5 h-3.5 w-3.5" />
+                Download
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => void handleSendInvoice()}
+                disabled={sendingInvoice || invoice.status === 'sent'}
+              >
+                <Send className="mr-1.5 h-3.5 w-3.5" />
+                {sendingInvoice ? 'Sending...' : invoice.status === 'sent' ? 'Sent' : 'Send'}
+              </Button>
+            </>
+          ) : (
+            <Button
+              size="sm"
+              onClick={() => void handleGenerateInvoice()}
+              disabled={generatingInvoice}
+            >
+              <FileText className="mr-1.5 h-3.5 w-3.5" />
+              {generatingInvoice ? 'Generating...' : 'Generate invoice'}
+            </Button>
+          )}
+        </div>
+      </section>
+
+      {booking.customerId && (
+        <div className="flex justify-end">
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => navigate(`/customers/${booking.customerId}`)}
+          >
+            <UserRound className="mr-1.5 h-3.5 w-3.5" />
+            Open customer profile
+          </Button>
+        </div>
+      )}
+
+      {editOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="max-h-[90vh] w-full max-w-lg space-y-4 overflow-y-auto rounded-lg border border-border bg-background p-4 shadow-lg">
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-semibold">Edit booking</h2>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setEditOpen(false)}
+              >
+                Close
+              </Button>
+            </div>
+
+            <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+              <div>
+                <p className="text-sm font-medium">{booking.customer?.name}</p>
+                <p className="text-xs text-muted-foreground">
+                  Currently {formatDate(bookingDate)} at {formatTime(bookingDate)}
+                </p>
+              </div>
+              <Badge variant="outline" className={`capitalize ${getStatusClass(booking.status)}`}>
+                {booking.status}
+              </Badge>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs">Package</Label>
+              <Select value={rescheduleService} onValueChange={setRescheduleService}>
+                <SelectTrigger className="h-9">
+                  <SelectValue placeholder="Select package" />
+                </SelectTrigger>
+                <SelectContent>
+                  {packages.map((pkg) => (
+                    <SelectItem key={pkg.id} value={pkg.name}>
+                      {pkg.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs">New date</Label>
+              <div className="rounded-md border border-border p-2">
+                <Calendar
+                  mode="single"
+                  selected={rescheduleDate}
+                  onSelect={(date) => {
+                    setRescheduleDate(date);
+                    setRescheduleTime('');
+                  }}
+                  disabled={(date) =>
+                    date < new Date(new Date().setHours(0, 0, 0, 0)) ||
+                    date.getDay() === 1
+                  }
+                  className="mx-auto w-full p-1"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs">New time</Label>
+                {loadingHours && (
+                  <span className="text-xs text-muted-foreground">Loading times...</span>
+                )}
+              </div>
+
+              {!rescheduleDate ? (
+                <p className="rounded-md border border-dashed border-border py-5 text-center text-xs text-muted-foreground">
+                  Select a date first.
+                </p>
+              ) : loadingHours ? (
+                <p className="py-5 text-center text-xs text-muted-foreground">
+                  Loading available times...
+                </p>
+              ) : availableHours.length === 0 ? (
+                <p className="rounded-md border border-dashed border-border py-5 text-center text-xs text-muted-foreground">
+                  No available times for this date.
+                </p>
+              ) : (
+                <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-4">
+                  {availableHours.map(({ time, available }) => {
+                    const date = new Date(time);
+                    const value = date.toTimeString().split(' ')[0];
+
+                    return (
+                      <Button
+                        key={time}
+                        size="sm"
+                        variant={rescheduleTime === value ? 'default' : 'outline'}
+                        disabled={!available}
+                        onClick={() => setRescheduleTime(value)}
+                        className="h-8 px-1 text-xs"
+                      >
+                        {formatTime(date)}
+                      </Button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-2 border-t border-border pt-3">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setEditOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => void handleReschedule()}
+                disabled={savingBooking || !rescheduleDate || !rescheduleTime}
+              >
+                {savingBooking ? 'Saving...' : 'Save changes'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+

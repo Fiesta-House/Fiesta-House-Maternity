@@ -75,6 +75,69 @@ export interface Payment {
   updatedAt: string;
 }
 
+export interface BookingDraftMessage {
+  id: string;
+  content: string;
+  platform: string;
+  direction: string;
+  handledBy: string | null;
+  createdAt: string;
+}
+
+export interface BookingDraft {
+  id: string;
+  customerId: string;
+  service: string | null;
+  date: string | null;
+  time: string | null;
+  dateTimeIso: string | null;
+  name: string | null;
+  recipientName: string | null;
+  recipientPhone: string | null;
+  isForSomeoneElse: boolean | null;
+  step: string;
+  conflictResolution: string | null;
+  bookingId: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  customer: {
+    id: string;
+    name: string;
+    phone: string | null;
+    whatsappId: string | null;
+    instagramUsername: string | null;
+    messengerId: string | null;
+    messages: BookingDraftMessage[];
+  };
+  payment: {
+    id: string;
+    amount: number;
+    phone: string;
+    status: string;
+    mpesaReceipt: string | null;
+    checkoutRequestId: string | null;
+    bookingId: string | null;
+    createdAt: string;
+    updatedAt: string;
+  } | null;
+  linkedBooking: {
+    id: string;
+    service: string;
+    dateTime: string;
+    status: string;
+    recipientName: string | null;
+    recipientPhone: string | null;
+    googleEventId: string | null;
+  } | null;
+}
+
+export interface BookingDraftsResponse {
+  drafts: BookingDraft[];
+  total: number;
+  countsByStep: Record<string, number>;
+}
+
 export interface Service {
   name: string;
   duration: number;
@@ -86,6 +149,11 @@ export const listBookings = async (params?: {
   limit?: number;
 }): Promise<{ bookings: Booking[]; total: number }> => {
   const response = await api.get('/bookings', { params });
+  return response.data;
+};
+
+export const listBookingDrafts = async (): Promise<BookingDraftsResponse> => {
+  const response = await api.get('/bookings/drafts');
   return response.data;
 };
 

@@ -54,7 +54,42 @@ export const invoicesApi = {
         return data;
     },
 
-    downloadInvoice: (invoiceId: string): string => {
-        return `${API_BASE}/api/invoices/download/${invoiceId}`;
+        downloadInvoice: async (invoiceId: string): Promise<void> => {
+        const response = await api.get(
+            `${API_BASE}/api/invoices/download/${invoiceId}`,
+            { responseType: 'blob' }
+        );
+
+        const disposition = response.headers['content-disposition'] as string | undefined;
+        let filename = `${invoiceId}.pdf`;
+
+        if (disposition) {
+            const encodedFilename = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+            const regularFilename = disposition.match(/filename="?([^";]+)"?/i);
+
+            const suppliedFilename = encodedFilename?.[1]
+                ? decodeURIComponent(encodedFilename[1])
+                : regularFilename?.[1];
+
+            if (suppliedFilename) {
+                filename = suppliedFilename;
+            }
+        }
+
+        const blobUrl = window.URL.createObjectURL(
+            new Blob([response.data], { type: 'application/pdf' })
+        );
+
+        const link = document.createElement('a');
+        link.href = blobUrl;
+        link.download = filename;
+
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+
+        window.setTimeout(() => {
+            window.URL.revokeObjectURL(blobUrl);
+        }, 1000);
     },
 };

@@ -7,6 +7,7 @@ import { Layout } from "./components/Layout";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 import Dashboard from "./pages/Dashboard";
 import Bookings from "./pages/Bookings";
+import BookingDetails from "./pages/BookingDetails";
 import Conversations from "./pages/Conversations";
 import Customers from "./pages/Customers";
 import AIModelMonitoringPage from "./pages/AIModelMonitoringPage";
@@ -27,6 +28,8 @@ import MessengerPage from "./pages/MessengerPage";
 import SystemStatus from "./pages/SystemStatus";
 import RagInsights from "./pages/RagInsights";
 import AiInstructions from "./pages/AiInstructions";
+import BookingDrafts from "./pages/BookingDrafts";
+
 
 const queryClient = new QueryClient();
 
@@ -59,6 +62,16 @@ const AppRouter = () => {
               <ProtectedRoute>
                 <Layout>
                   <Bookings />
+                </Layout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/bookings/:bookingId"
+            element={
+              <ProtectedRoute>
+                <Layout>
+                  <BookingDetails />
                 </Layout>
               </ProtectedRoute>
             }
@@ -146,6 +159,16 @@ const AppRouter = () => {
               </ProtectedRoute>
             }
           />
+                 <Route
+  path="/booking-drafts"
+  element={
+    <ProtectedRoute>
+      <Layout>
+        <BookingDrafts />
+      </Layout>
+    </ProtectedRoute>
+  }
+/>
           <Route
             path="/instagram"
             element={
@@ -156,6 +179,7 @@ const AppRouter = () => {
               </ProtectedRoute>
             }
           />
+   
           <Route
             path="/knowledge-base"
             element={
